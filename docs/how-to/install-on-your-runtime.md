@@ -159,6 +159,27 @@ KILO_CONFIG_DIR=~/.config/kilo-alt npx @opengsd/gsd-core@latest --kilo --global
 
 ---
 
+### Kiro
+
+```bash
+npx @opengsd/gsd-core@latest --kiro --global
+```
+
+[Kiro](https://kiro.dev) is AWS's agentic CLI and IDE. GSD installs skills (nested `SKILL.md` bundles) and custom agents under `~/.kiro/` (or the project's `.kiro/` with `--local`):
+
+- **Skills** → `~/.kiro/skills/gsd-<name>/SKILL.md` (invoke with `/gsd-<name>`; Kiro CLI substitutes the text after the slash command into `$ARGUMENTS`)
+- **Subagents** → `~/.kiro/agents/gsd-<name>.json` (legacy-JSON custom agents, the one agent format both Kiro CLI 2.x and 3.x read; Claude tool grants are folded onto Kiro's `fs_read` / `fs_write` / `execute_bash` / `grep` / `glob` / `web_fetch` / `web_search` tool ids, MCP grants onto `@<server>`). The Claude-side `*.compact.md` effort variants are not emitted, since Kiro keys agents by name.
+
+Kiro has no `CLAUDE.md` equivalent — project instructions live in the steering directory, so GSD's project-instruction references point at `.kiro/steering/gsd.md`. No hooks or shared settings are written: Kiro's hook files (`.kiro/hooks/*.json`) are not managed by GSD.
+
+**Override the install directory:**
+
+```bash
+KIRO_CONFIG_DIR=~/.kiro-alt npx @opengsd/gsd-core@latest --kiro --global
+```
+
+---
+
 ### Codex
 
 ```bash

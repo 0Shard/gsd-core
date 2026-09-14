@@ -1643,6 +1643,181 @@ function convertClaudeCommandToTraeSkill(content, skillName) {
   return `${fm}\n${body}`;
 }
 
+// ── Kiro converters ──────────────────────────────────────────────────────────
+// Kiro (kiro.dev) CLI + IDE. Skills are Agent-Skills-shaped bundles at
+// `<configHome>/skills/<name>/SKILL.md` (kiro.dev/docs/skills: "Workspace
+// skills take priority over global skills"; global root `~/.kiro/skills/`),
+// invoked as `/<skill-name>`; the CLI substitutes `$ARGUMENTS` natively
+// ("If the skill body contains `$ARGUMENTS` ... text after the slash command
+// is substituted"), so — unlike Trae — the placeholder is kept verbatim.
+// Custom agents are Markdown files at `<configHome>/agents/<name>.md`
+// (kiro.dev/docs/custom-agents; frontmatter `name`, `description`, `tools`,
+// body = system prompt). Kiro's project instruction surface is the steering
+// directory (`.kiro/steering/*.md`), not a single CLAUDE.md, so instruction-
+// file references converge on the descriptor's
+// `hostBehaviors.projectInstructionFile` (`.kiro/steering/gsd.md`).
+
+function convertSlashCommandsToKiroSkillMentions(content) {
+  return content.replace(/\/gsd:([a-z0-9-]+)/g, (_, commandName) => {
+    return `/gsd-${commandName}`;
+  });
+}
+
+/**
+ * Claude tool name → Kiro built-in tool id, in the legacy JSON agent schema's
+ * vocabulary (kiro.dev/docs/cli/v3/migration-guide "Legacy Agent
+ * Configuration": `"tools": ["fs_read", "fs_write", "execute_bash", "grep",
+ * "glob"]`). The legacy ids are what Kiro CLI 2.x reads and what 3.x still
+ * accepts ("This format remains fully supported in V3"); the 3.x tag
+ * vocabulary (`read`/`write`/`shell`/`web`) is NOT understood by 2.x, which is
+ * why the ids are emitted rather than the tags. Tools with no Kiro counterpart
+ * (AskUserQuestion, Skill, SlashCommand) map to null and are dropped. MCP
+ * grants (`mcp__<server>__<tool>`) fold onto the legacy `@<server>` form.
+ */
+const claudeToKiroToolIds: Readonly<Record<string, string | null>> = {
+  Read: 'fs_read',
+  LS: 'fs_read',
+  Glob: 'glob',
+  Grep: 'grep',
+  Write: 'fs_write',
+  Edit: 'fs_write',
+  MultiEdit: 'fs_write',
+  NotebookEdit: 'fs_write',
+  Bash: 'execute_bash',
+  BashOutput: 'execute_bash',
+  KillShell: 'execute_bash',
+  WebFetch: 'web_fetch',
+  WebSearch: 'web_search',
+  TodoWrite: 'todo_list',
+  Agent: null,
+  Task: null,
+  AskUserQuestion: null,
+  Skill: null,
+  SlashCommand: null,
+};
+
+function convertKiroToolId(claudeTool: string): string | null {
+  if (claudeTool in claudeToKiroToolIds) return claudeToKiroToolIds[claudeTool];
+  if (claudeTool.startsWith('mcp__')) {
+    // `mcp__<server>__<tool>` (server names may carry single underscores) →
+    // the whole server, `@<server>`; a bare `mcp__<server>` maps the same way.
+    const rest = claudeTool.slice('mcp__'.length);
+    const server = rest.split('__')[0];
+    return server ? `@${server}` : null;
+  }
+  return null;
+}
+
+function convertClaudeToKiroMarkdown(content) {
+  let converted = convertSlashCommandsToKiroSkillMentions(filterRuntimeNotesForTarget(content, 'kiro'));
+  converted = converted.replace(/\bBash\(/g, 'shell(');
+  converted = converted.replace(/\bEdit\(/g, 'write(');
+  // Kiro's default sub-agent is selected by description / explicit request
+  // (kiro.dev/docs/custom-agents/subagents); no named general-purpose type.
+  converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="default"');
+  // Same ordering contract as the Trae converter: full-path instruction-file
+  // forms first, then the generic dot-claude-slash rewrite, then bare forms.
+  converted = converted.replace(/`\.\/\.claude\/CLAUDE\.md`/g, '`.kiro/steering/gsd.md`');
+  converted = converted.replace(/\.\/\.claude\/CLAUDE\.md/g, '.kiro/steering/gsd.md');
+  converted = converted.replace(/`\.claude\/CLAUDE\.md`/g, '`.kiro/steering/gsd.md`');
+  converted = converted.replace(/\.claude\/CLAUDE\.md/g, '.kiro/steering/gsd.md');
+  converted = converted.replace(/`([^\s`]*\.kiro\/)CLAUDE\.md`/g, '`$1steering/gsd.md`');
+  converted = converted.replace(/([^\s`]*\.kiro\/)CLAUDE\.md/g, '$1steering/gsd.md');
+  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.kiro/steering/gsd.md`');
+  converted = converted.replace(/\.\/CLAUDE\.md/g, '.kiro/steering/gsd.md');
+  converted = converted.replace(/`CLAUDE\.md`/g, '`.kiro/steering/gsd.md`');
+  converted = converted.replace(/\bCLAUDE\.md\b/g, '.kiro/steering/gsd.md');
+  converted = converted.replace(/\.claude\/skills\//g, '.kiro/skills/');
+  converted = converted.replace(/\.\/\.claude\//g, './.kiro/');
+  converted = converted.replace(/\.claude\//g, '.kiro/');
+  // Bare forms (no trailing slash) — after slash forms to avoid double-rewrite.
+  // Negative lookahead preserves .claude-plugin and .claudeignore.
+  converted = converted.replace(/~\/\.claude(?![\w-])/g, '~/.kiro');
+  converted = converted.replace(/\$HOME\/\.claude(?![\w-])/g, '$HOME/.kiro');
+  converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'KIRO_CONFIG_DIR');
+  converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
+  converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
+  converted = applyClaudeCodeBrandSwap(converted, 'Kiro');
+  return converted;
+}
+
+/**
+ * Claude command (.md) → Kiro skill bundle body (`skills/gsd-<name>/SKILL.md`).
+ * kiro.dev/docs/skills: `name` "Must match folder name. Lowercase letters,
+ * numbers, and hyphens only (max 64 chars)"; `description` "max 1024 chars".
+ * Both limits are enforced here so a long GSD description cannot make Kiro
+ * reject the bundle.
+ */
+function convertClaudeCommandToKiroSkill(content, skillName) {
+  const converted = convertClaudeToKiroMarkdown(content);
+  const { frontmatter, body } = extractFrontmatterAndBody(converted);
+  let description = `Run GSD workflow ${skillName}.`;
+  if (frontmatter) {
+    const maybeDescription = extractFrontmatterField(frontmatter, 'description');
+    if (maybeDescription) {
+      description = maybeDescription;
+    }
+  }
+  description = toSingleLine(description);
+  const shortDescription = description.length > 1024 ? `${description.slice(0, 1021)}...` : description;
+  const name = yamlIdentifier(skillName).toLowerCase().slice(0, 64);
+  return `---\nname: ${name}\ndescription: ${yamlQuote(shortDescription)}\n---\n${body}`;
+}
+
+/**
+ * Claude agent (.md) → Kiro legacy-JSON custom agent (`agents/<name>.json`,
+ * hostBehaviors.agentFileExtension). JSON rather than the 3.x Markdown agent
+ * format because Kiro CLI 2.x reads JSON only ("In CLI 2.x, agent configs were
+ * JSON-only", kiro.dev/docs/cli/2x-reference) and 3.x keeps reading it. The
+ * converted body becomes the inline `prompt` string. The Claude-side
+ * `model:` alias (opus/sonnet/haiku) and `color:` are not forwarded; instead
+ * the layout threads a resolved `modelOverride` (options bag, same chain as
+ * kilo/opencode: model_overrides[agent] > model_profile_overrides.kiro.<tier>
+ * > catalog kiro tier defaults) and it is stamped as Kiro's `model` when
+ * present. An agent whose source declares no tools gets no `tools` key, so
+ * Kiro's default toolkit applies rather than a toolless agent.
+ */
+function convertClaudeAgentToKiroAgent(
+  content: string,
+  opts: boolean | { isAgent?: boolean; modelOverride?: string | null; variant?: string | null } = {},
+) {
+  const converted = convertClaudeToKiroMarkdown(content);
+
+  const { frontmatter, body } = extractFrontmatterAndBody(converted);
+  if (!frontmatter) return converted;
+
+  const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
+  const description = extractFrontmatterField(frontmatter, 'description') || '';
+  const rawTools = extractFrontmatterField(frontmatter, 'tools');
+  // A boolean 2nd arg is the positional `isGlobal` every non-bag converter
+  // receives; only the options bag can carry a model.
+  const modelOverride = typeof opts === 'object' && opts !== null && typeof opts.modelOverride === 'string' && opts.modelOverride.length > 0
+    ? opts.modelOverride
+    : null;
+
+  const agent: { name: string; description: string; prompt: string; model?: string; tools?: string[] } = {
+    name: yamlIdentifier(name),
+    description: toSingleLine(description),
+    prompt: body.trim(),
+  };
+  if (modelOverride) agent.model = modelOverride;
+  if (rawTools) {
+    // Fold the Claude tool list onto Kiro's legacy tool ids, deduplicated in
+    // first-seen order; an empty result omits `tools` (see above).
+    const ids: string[] = [];
+    for (const raw of splitToolScalars(rawTools)) {
+      const decoded = decodeToolScalar(raw);
+      if (decoded === null) continue;
+      const id = convertKiroToolId(decoded);
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    if (ids.length > 0) agent.tools = ids;
+  }
+  return `${JSON.stringify(agent, null, 2)}\n`;
+}
+
+// ── End Kiro converters ──────────────────────────────────────────────────────
+
 function convertSlashCommandsToCodebuddySkillMentions(content) {
   return content.replace(/\/gsd:([a-z0-9-]+)/g, (_, commandName) => {
     return `/gsd-${commandName}`;
@@ -3372,6 +3547,21 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = processAttribution(content, attribution);
       break;
 
+    case 'kiro':
+      // Same shape as the trae arm: the skills/agents converters above own the
+      // instruction-file and brand rewrites; this pass only retargets the
+      // config-home paths inside the copied engine files. The self-alias
+      // regex is built from dirName (descriptor-driven, no runtime literal).
+      content = content.replace(/~\/\.claude\//g, pathPrefix);
+      content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
+      content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
+      content = content.replace(/~\/\.claude\b/g, normalizedPathPrefix);
+      content = content.replace(/\$HOME\/\.claude\b/g, normalizedPathPrefix);
+      content = content.replace(/\.\/\.claude\b/g, `./${dirName}`);
+      content = content.replace(new RegExp('~/' + escapeRegExp(dirName) + '/', 'g'), pathPrefix);
+      content = processAttribution(content, attribution);
+      break;
+
     case 'zcode':
       // #4002: ZCode is a Claude-Code-shaped host (dot-home `.zcode`, `@~`-ref
       // expansion, `~/.zcode/...` documented paths) whose commands install with
@@ -3879,6 +4069,11 @@ export = {
   convertClaudeCommandToAugmentSkill,
   convertClaudeToTraeMarkdown,
   convertClaudeCommandToTraeSkill,
+  // Kiro: registered by name so the layout-driven skills kind can resolve
+  // `convertClaudeCommandToKiroSkill` from capabilities/kiro/capability.json.
+  convertClaudeToKiroMarkdown,
+  convertClaudeCommandToKiroSkill,
+  convertKiroToolId,
   convertClaudeToCodebuddyMarkdown,
   convertClaudeCommandToCodebuddySkill,
   convertClaudeCommandToCodebuddyCommand,
@@ -3915,6 +4110,7 @@ export = {
   convertClaudeAgentToWindsurfAgent,
   convertClaudeAgentToAugmentAgent,
   convertClaudeAgentToTraeAgent,
+  convertClaudeAgentToKiroAgent,
   convertClaudeAgentToCodebuddyAgent,
   convertClaudeAgentToClineAgent,
   convertClaudeAgentToCodexAgent,

@@ -39,6 +39,7 @@ For the transform each converter applies, see [ADR-1593 §3 — converter transf
 | **codebuddy** | `skills/` | `gsd-` | flat | unconfirmed → conservative | `convertClaudeCommandToCodebuddySkill` | Also ships flat `commands/` via `convertClaudeCommandToCodebuddyCommand`. `dot-home` config. |
 | **cline** | `skills/` | `gsd-` | nested | non-recursive (flat `fs.readdir`) | `convertClaudeCommandToClineSkill` | **Global-only** — `local: []` (no local skill install). Targets `~/.cline/skills/<name>/SKILL.md` (Cline ≥ v3.48.0). `markdown-dir` config. |
 | **kimi** | `skills/` | `gsd-` | flat | (false) | `convertClaudeCommandToKimiSkill` | Also ships a special `kimi-agents` kind (`buildKimiAgentArtifacts`). Name normalization (`normalizeKimiSkillName`). `generic-agents-root` config. |
+| **kiro** | `skills/` | `gsd-` | flat | one-level (`skills/<name>/SKILL.md`, name must match folder) | `convertClaudeCommandToKiroSkill` | Kiro invokes skills directly as `/gsd-<name>` and substitutes `$ARGUMENTS` natively, so the placeholder is kept verbatim and nesting would hide the concretes behind routers. Description capped at Kiro's 1024 chars. `configFormat: none`. |
 
 ### Structural facts
 

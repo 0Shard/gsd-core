@@ -272,6 +272,55 @@ test('an added emitted key is a ripple too', () => {
   assert.equal(r.unattributable[0].change, 'added');
 });
 
+// ── A family this PR introduces (a new runtime descriptor) ───────────────────
+//
+// The baseline side has no such family at all, so every emitted path is `added`,
+// and the verbatim ones (engine files, agents, workflows copied unchanged) have
+// sources the PR never touched. Their provenance is the descriptor that made the
+// runtime exist; without it in the diff they stay unexplained.
+
+test('a brand-new family attributes its added verbatim paths to its runtime descriptor', () => {
+  const r = diffEmitted({
+    baseline: mf({}),
+    current: {
+      ...mf({}),
+      kiro: { [WORKFLOW_KEY]: 'bbb', 'gsd-core/bin/gsd-tools.cjs': 'ccc' },
+    },
+    changedPaths: ['capabilities/kiro/capability.json'],
+  });
+  assert.equal(r.moved, 2);
+  assert.equal(r.unattributable.length, 0, 'a new family is explained by its descriptor');
+  assert.deepEqual(
+    r.attributed.map((a) => [a.runtime, a.change, a.via]),
+    [
+      ['kiro', 'added', 'capabilities/kiro/capability.json'],
+      ['kiro', 'added', 'capabilities/kiro/capability.json'],
+    ],
+  );
+  assert.ok(r.ok);
+});
+
+test('a brand-new family whose descriptor is NOT in the diff stays unattributable', () => {
+  const r = diffEmitted({
+    baseline: mf({}),
+    current: { ...mf({}), kiro: { [WORKFLOW_KEY]: 'bbb' } },
+    changedPaths: ['README.md'],
+  });
+  assert.equal(r.unattributable.length, 1);
+  assert.equal(r.unattributable[0].runtime, 'kiro');
+  assert.ok(!r.ok);
+});
+
+test('the new-family fallback never excuses a path in a family the baseline already has', () => {
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb', 'gsd-core/bin/gsd-tools.cjs': 'ccc' }),
+    changedPaths: ['capabilities/claude/capability.json'],
+  });
+  assert.equal(r.unattributable.length, 2, 'an existing family gets no descriptor excuse for modified or added paths');
+  assert.ok(!r.ok);
+});
+
 test('a removed emitted key is reported', () => {
   const r = diffEmitted({
     baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
@@ -1843,30 +1892,30 @@ test('rejects a registered runtime with no fixture, naming it', () => {
 // ── The absolute floor: limit-1 / limit / limit+1 ────────────────────────────
 
 test('floor is enforced at limit-1 / limit / limit+1', () => {
-  const eighteen = ALL_FAMILIES.filter((n) => n !== 'trae');          // limit-1
-  const twenty = [...ALL_FAMILIES, 'qoder'];                          // limit+1
+  const nineteen = ALL_FAMILIES.filter((n) => n !== 'trae');          // limit-1
+  const twentyOne = [...ALL_FAMILIES, 'qoder'];                       // limit+1
 
   const below = reconcileWith({
-    derivedNames: eighteen, baselineNames: eighteen, currentNames: eighteen,
+    derivedNames: nineteen, baselineNames: nineteen, currentNames: nineteen,
   });
   assert.equal(below.ok, false);
   assert.ok(codesOf(below).includes(FAMILY_REASON.BELOW_FLOOR));
 
-  assert.deepEqual(reconcileWith({}), { ok: true, errors: [] });      // limit == 19
+  assert.deepEqual(reconcileWith({}), { ok: true, errors: [] });      // limit == 20
 
   const above = reconcileWith({
-    derivedNames: twenty, baselineNames: twenty, currentNames: twenty,
+    derivedNames: twentyOne, baselineNames: twentyOne, currentNames: twentyOne,
   });
   assert.deepEqual(above, { ok: true, errors: [] });
 });
 
 test('a uniformly shrunken universe fails on the floor', () => {
   // The Goodhart move the old literal permitted: drop a runtime AND its fixture together
-  // and lower the constant, and 18 === 18 passes over a smaller world.
-  const eighteen = ALL_FAMILIES.filter((n) => n !== 'trae');
+  // and lower the constant, and 19 === 19 passes over a smaller world.
+  const nineteen = ALL_FAMILIES.filter((n) => n !== 'trae');
   const r = reconcileWith({
-    derivedNames: eighteen, fixtureNames: eighteen,
-    baselineNames: eighteen, currentNames: eighteen,
+    derivedNames: nineteen, fixtureNames: nineteen,
+    baselineNames: nineteen, currentNames: nineteen,
     changedPaths: REGISTRY_CHANGE,
   });
   assert.equal(r.ok, false);

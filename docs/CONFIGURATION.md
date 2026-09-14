@@ -2081,6 +2081,7 @@ When `runtime` is set, profile tiers (`opus`/`sonnet`/`haiku`) resolve to runtim
 |---------|--------|----------|---------|------------------|
 | `claude` | `claude-opus-4-8` | `claude-sonnet-5` | `claude-haiku-4-5` | (not used) |
 | `codex` | `gpt-5.6-sol` | `gpt-5.6-terra` | `gpt-5.6-luna` | `xhigh` / `medium` / `medium` |
+| `kiro` | `gpt-5.6-terra` | `gpt-5.6-luna` | `gpt-5.6-luna` | `xhigh` / `xhigh` / `high` (resolver data only — Kiro has no effort channel GSD can write) |
 | `qwen` | `qwen3-max-2026-01-23` | `qwen3-coder-plus` | `qwen3-coder-next` | (not used) |
 | `opencode` | `anthropic/claude-opus-4-8` | `anthropic/claude-sonnet-5` | `anthropic/claude-haiku-4-5` | (not used) |
 | `copilot` | `claude-opus-4-8` | `claude-sonnet-5` | `claude-haiku-4-5` | (not used) |

@@ -42,12 +42,23 @@ const {
  * branch ADDED answers true, every line being new — which is what a real
  * #3676-phase branch looks like.
  */
+/**
+ * The canonical `gsd_run` resolver preamble (gsd-core/workflows/_runtime-launcher.snippet.sh,
+ * propagated into every workflow by `npm run sync:launcher`). A branch that adds a runtime
+ * re-syncs it into EVERY workflow — quick-batch.md, quick.md and the quick/steps/ fragments
+ * included — which is the same "touches all of it by construction" false positive as the
+ * #2529 directive sweep, arriving via the launcher instead. Same carve-out: a diff line that
+ * is the preamble (old or new) says nothing about quick-batch phase work.
+ */
+const RUNTIME_LAUNCHER_PREAMBLE_PREFIX = '_GSD_SHIM_NAME="gsd-tools.cjs";';
+
 function editsBeyondSharedDirective(base, file) {
   const diff = git(['diff', '--unified=0', `${base}...HEAD`, '--', file]);
   return diff.split('\n').some((line) => {
     if (!/^[+-]/.test(line) || line.startsWith('+++') || line.startsWith('---')) return false;
     const body = line.slice(1).trim();
     if (body === '' || body === INLINE_RESPONSE_LANGUAGE_DIRECTIVE) return false;
+    if (body.startsWith(RUNTIME_LAUNCHER_PREAMBLE_PREFIX)) return false;
     return !importsDirectiveReference(body);
   });
 }

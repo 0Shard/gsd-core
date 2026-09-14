@@ -74,6 +74,7 @@ const RUNTIME_META = {
   kimi:         { localDir: '.kimi-code',        globalSuffix: path.join('.config', 'agents') },
   'kimi-code':  { localDir: '.kimi-code',        globalSuffix: '.kimi-code' },
   kilo:         { localDir: '.kilo',             globalSuffix: path.join('.config', 'kilo') },
+  kiro:         { localDir: '.kiro',             globalSuffix: '.kiro' },
   opencode:     { localDir: '.opencode',         globalSuffix: path.join('.config', 'opencode') },
   pi:           { localDir: '.pi',               globalSuffix: path.join('.pi', 'agent') },
   qwen:         { localDir: '.qwen',             globalSuffix: '.qwen' },
@@ -116,12 +117,12 @@ const MANIFEST_FAMILIES = [
  * derived — it ratchets, and lowering it is a deliberate, reviewable act. It never
  * blocks ADDING a runtime, which is the asymmetry the old shared literal lacked.
  */
-const MINIMUM_MANIFEST_FAMILIES = 19;
+const MINIMUM_MANIFEST_FAMILIES = 20; // ratcheted 19 → 20 with the kiro runtime
 
 // Runtimes that emit per-skill files under skills/ (not rules-based or commands-based)
 const SKILL_RUNTIMES = [
   'claude', 'opencode', 'kilo', 'codex', 'copilot', 'antigravity',
-  'cursor', 'augment', 'trae', 'qwen', 'codebuddy',
+  'cursor', 'augment', 'trae', 'qwen', 'codebuddy', 'kiro',
 ];
 
 // ─── Golden install-parity manifest (canonical — issue #2266) ────────────────

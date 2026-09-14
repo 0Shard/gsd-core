@@ -792,6 +792,15 @@ function _copyStaged(stagedDir: string, destDir: string, kind: any, configDir: s
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     if (!entry.name.endsWith('.md')) continue;
+    // `<name>.compact.md` variants are Claude-side effort variants selected by
+    // init's compact mode; on a host that keys agents by an in-file `name`
+    // (kiro's JSON agents) they would register a second agent with the same
+    // name. Descriptor-driven via hostBehaviors.omitCompactAgentVariants; every
+    // other runtime's descriptor leaves this unset (byte-parity).
+    if (
+      kind.kind === 'agents' && entry.name.endsWith('.compact.md')
+      && runtime && _hostBehaviors(runtime).omitCompactAgentVariants === true
+    ) continue;
     const stem = entry.name.slice(0, -3); // strip .md
 
     let destName: string;

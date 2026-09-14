@@ -315,6 +315,19 @@ function diffEmitted({
     const after = current[runtime] || {};
     const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
 
+    // A family with NO baseline side at all is a runtime this PR introduces
+    // (`reconcileFamilies` has already required the registry change that adds it).
+    // Every one of its emitted paths is `added` by construction, and the verbatim
+    // ones (engine files copied unchanged from gsd-core/, agents, workflows) have
+    // sources this PR never touched — so per-path attribution cannot explain them
+    // and never could. Their provenance IS the new descriptor: attribute each
+    // `added` path to `capabilities/<runtime>/capability.json` when that file is in
+    // the diff. A family that is new WITHOUT its descriptor in the diff gets no such
+    // excuse and stays unattributable, exactly as before.
+    const familyIsNew = !Object.prototype.hasOwnProperty.call(baseline, runtime);
+    const descriptorPath = `capabilities/${runtime}/capability.json`;
+    const newFamilyVia = familyIsNew && changedSet.has(descriptorPath) ? descriptorPath : null;
+
     for (const rel of [...keys].sort()) {
       const had = Object.prototype.hasOwnProperty.call(before, rel);
       const has = Object.prototype.hasOwnProperty.call(after, rel);
@@ -367,6 +380,11 @@ function diffEmitted({
           const hit = sourceSatisfiedBy(transform, changedSet);
           if (hit !== null) { via = hit; break; }
         }
+      }
+      // New-family fallback (see `newFamilyVia` above): only `added` paths, and only
+      // after the specific source/transform stories have had their chance.
+      if (via === null && change === 'added' && newFamilyVia !== null) {
+        via = newFamilyVia;
       }
 
       if (via !== null) {

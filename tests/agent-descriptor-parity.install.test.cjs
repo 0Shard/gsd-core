@@ -654,7 +654,11 @@ test('agent-descriptor-parity: K1 — every registry runtime declaring an agents
     const result = installEngine.installRuntimeArtifacts(runtime, targetDir, 'global', resolvedProfile, () => undefined, undefined);
     const agentsKindEntry = result.kinds.find((k) => k.kind === 'agents');
     assert.ok(agentsKindEntry, `${runtime}: installRuntimeArtifacts reported no agents kind in the executed plan — it did not go through the descriptor path`);
-    const writtenFiles = fs.readdirSync(agentsKindEntry.destDir).filter((f) => f.endsWith('.md'));
-    assert.ok(writtenFiles.length > 0, `${runtime}: agents kind reported but nothing was actually written to ${agentsKindEntry.destDir}`);
+    // Honor the descriptor's emitted extension (hostBehaviors.agentFileExtension —
+    // copilot's `.agent.md`, kiro's `.json`); every other runtime writes `.md`.
+    const hb = (capabilityRegistry.runtimes[runtime].runtime || {}).hostBehaviors || {};
+    const agentExt = typeof hb.agentFileExtension === 'string' && hb.agentFileExtension ? hb.agentFileExtension : '.md';
+    const writtenFiles = fs.readdirSync(agentsKindEntry.destDir).filter((f) => f.endsWith(agentExt));
+    assert.ok(writtenFiles.length > 0, `${runtime}: agents kind reported but nothing was actually written to ${agentsKindEntry.destDir} (expected *${agentExt})`);
   }
 });

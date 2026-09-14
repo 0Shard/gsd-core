@@ -855,6 +855,7 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeCommandToKiloSkill',
   'convertClaudeCommandToKimiSkill',
   'convertClaudeCommandToKimiCodeSkill',
+  'convertClaudeCommandToKiroSkill',
   'convertClaudeCommandToOpencodeSkill',
   'convertClaudeCommandToTraeSkill',
   'convertClaudeCommandToWindsurfSkill',
@@ -866,6 +867,7 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeAgentToWindsurfAgent',
   'convertClaudeAgentToAugmentAgent',
   'convertClaudeAgentToTraeAgent',
+  'convertClaudeAgentToKiroAgent',
   'convertClaudeAgentToCodebuddyAgent',
   'convertClaudeAgentToClineAgent',
   'convertClaudeAgentToCodexAgent',
@@ -1930,6 +1932,9 @@ const KNOWN_HOST_BEHAVIORS = new Set([
   'managedHookEvents',
   'mcpCompanion',
   'namedSubagentsSupported',
+  // kiro: agents are keyed by their in-file `name`, so Claude's `*.compact.md`
+  // effort variants would register duplicates — the install loop skips them.
+  'omitCompactAgentVariants',
   'nativeModelAliases',
   'nativePlugin',
   'noPathRewrite',
