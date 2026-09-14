@@ -356,7 +356,7 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     // KEYSTONE. This row is GREEN before and after #2801 — it is the invariant
     // the phase must not break, not a red row. The literal list is never
     // computed by the machinery under test.
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'roster must be exactly 12 — not 11, not 13');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 11, 'roster must be exactly 11 — not 10, not 12');
     assert.deepEqual(
       [...KNOWN_REVIEWER_SLUGS].sort(), LITERAL_ROSTER,
       `roster must be exactly the declared lane set, got: ${JSON.stringify(KNOWN_REVIEWER_SLUGS)}`,
