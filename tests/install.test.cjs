@@ -7831,7 +7831,7 @@ describe('#3026: installer --help documents every accepted runtime flag', () => 
       '--claude', '--opencode', '--kilo', '--codex', '--kimi',
       '--copilot', '--antigravity', '--cursor', '--windsurf', '--augment',
       '--trae', '--qwen', '--hermes', '--cline', '--codebuddy',
-      '--zcode', '--pi', '--gemini',
+      '--zcode', '--pi', '--gemini', '--kiro',
     ];
 
     const missing = acceptedRuntimeFlags.filter(

@@ -29,6 +29,7 @@ const FALLBACK_ALIASES: Readonly<Record<string, string[]>> = {
   hermes: ['hermes', 'hermes-agent', 'hermes-cli'],
   kimi: ['kimi'],
   'kimi-code': ['kimi-code', 'kimicode', 'kimi_code'],
+  kiro: ['kiro', 'kiro-cli', 'kiro-ide'],
   codebuddy: ['codebuddy', 'codebuddy-cli'],
   cline: ['cline', 'cline-cli'],
 };
@@ -240,6 +241,7 @@ const RUNTIME_LABELS: Readonly<Record<string, string>> = {
   hermes: 'Hermes Agent',
   kimi: 'Kimi CLI',
   'kimi-code': 'Kimi Code',
+  kiro: 'Kiro',
   codebuddy: 'CodeBuddy',
   cline: 'Cline',
   zcode: 'ZCode',
@@ -297,6 +299,7 @@ const GLOBAL_CONFIG_HOME_FRAGMENTS: Readonly<Record<string, string>> = {
   cline:     "'.cline'",
   kimi:      "'.config', 'agents'",
   'kimi-code': "'.kimi-code'",
+  kiro:      "'.kiro'",
   zcode:     "'.zcode'",
   // pi's global config home is ~/.pi/agent (configHome: dot-home-nested,
   // parent '.pi', name 'agent' — capabilities/pi/capability.json), matching
@@ -332,7 +335,7 @@ export function getGlobalConfigHomeFragment(runtime: string): string {
 // folds the shared-hooks-install skip).
 const RUNTIME_FLAG_IDS = Object.freeze([
   'opencode', 'kilo', 'codex', 'copilot', 'antigravity', 'cursor',
-  'windsurf', 'augment', 'trae', 'qwen', 'hermes', 'codebuddy', 'cline', 'kimi', 'kimi-code', 'zcode', 'pi',
+  'windsurf', 'augment', 'trae', 'qwen', 'hermes', 'codebuddy', 'cline', 'kimi', 'kimi-code', 'zcode', 'pi', 'kiro',
 ] as const);
 
 /**

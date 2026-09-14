@@ -369,6 +369,17 @@ const PROVENANCE_RULES = [
     transforms: AGENT_TRANSFORM_SRCS,
   },
   {
+    id: 'agents-json-derived',
+    kind: 'derived',
+    roots: ['agents'],
+    // Kiro emits a legacy-JSON agent (`<name>.json`, readable by Kiro CLI 2.x and
+    // 3.x) generated from the same agents/<name>.md source
+    // (convertClaudeAgentToKiroAgent).
+    pattern: /^([^/]+)\.json$/,
+    sources: (m) => [`agents/${m[1]}.md`],
+    transforms: AGENT_TRANSFORM_SRCS,
+  },
+  {
     id: 'agents-subagent-derived',
     kind: 'derived',
     roots: ['agents'],

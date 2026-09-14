@@ -432,17 +432,18 @@ describe('Fix 3: reserved-key guard on hostIntegration and hostIntegration.dispa
 });
 
 // ---------------------------------------------------------------------------
-// #3673 — ADR-1239 Phase 1: all 19 shipped descriptors carry
+// #3673 — ADR-1239 Phase 1: all 20 shipped descriptors carry
 // dispatch.maxConcurrency (a real sourced integer or the "undocumented"
 // sentinel — never silently absent), and every one validates clean.
+// (19 → 20 with the kiro descriptor.)
 // ---------------------------------------------------------------------------
 
-describe('#3673 dispatch.maxConcurrency — all 19 shipped descriptors', () => {
+describe('#3673 dispatch.maxConcurrency — all 20 shipped descriptors', () => {
   const registry = require(path.join(__dirname, '../gsd-core/bin/lib/capability-registry.cjs'));
 
-  test('registry carries exactly 19 runtime descriptors', () => {
-    assert.strictEqual(Object.keys(registry.runtimes).length, 19,
-      `expected exactly 19 shipped runtimes; got: ${Object.keys(registry.runtimes).sort().join(', ')}`);
+  test('registry carries exactly 20 runtime descriptors', () => {
+    assert.strictEqual(Object.keys(registry.runtimes).length, 20,
+      `expected exactly 20 shipped runtimes; got: ${Object.keys(registry.runtimes).sort().join(', ')}`);
   });
 
   test('every shipped descriptor declares dispatch.maxConcurrency as a number or "undocumented" — never absent', () => {

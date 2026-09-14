@@ -542,7 +542,7 @@ function checkCodexSandboxPosture(runtime?: string, projectRoot?: string): Codex
 /**
  * Probe a single agents dir for `<name>` across runtime filename variants.
  * Mirrors {@link checkAgentsInstalled}'s probe (`.md`, `.agent.md`, `.toml`,
- * and the kimi `subagents/<name>.{yaml,md}` pair) so the two can never disagree
+ * `.json`, and the kimi `subagents/<name>.{yaml,md}` pair) so the two can never disagree
  * about which on-disk shapes count as "installed". Not exported — internal to
  * {@link resolveAgentHint}.
  */
@@ -550,7 +550,10 @@ function agentFileExists(agentsDir: string, name: string, runtime: string): bool
   const base = path.join(agentsDir, `${name}.md`);
   const copilot = path.join(agentsDir, `${name}.agent.md`);
   const codex = path.join(agentsDir, `${name}.toml`);
-  if (fs.existsSync(base) || fs.existsSync(copilot) || fs.existsSync(codex)) {
+  // kiro: legacy-JSON agents (`hostBehaviors.agentFileExtension: ".json"`),
+  // the one agent shape Kiro CLI 2.x and 3.x both read.
+  const kiroJson = path.join(agentsDir, `${name}.json`);
+  if (fs.existsSync(base) || fs.existsSync(copilot) || fs.existsSync(codex) || fs.existsSync(kiroJson)) {
     return true;
   }
   // kimi requires BOTH the persona yaml and the prompt md (same as checkAgentsInstalled).

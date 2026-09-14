@@ -2459,6 +2459,105 @@ const capabilities = {
       }
     }
   },
+  "kiro": {
+    "id": "kiro",
+    "role": "runtime",
+    "version": "1.14.0",
+    "title": "Kiro",
+    "description": "Kiro (AWS) CLI and IDE — Agent-Skills-shaped flat skills at ~/.kiro/skills/gsd-<name>/SKILL.md invoked as /gsd-<name> with native $ARGUMENTS substitution, JSON custom agents at ~/.kiro/agents/<name>.json (the legacy JSON schema Kiro CLI 2.x and 3.x both read), steering instead of CLAUDE.md, native MCP; declarative config surface; profile-marker install; tier-2 community support.",
+    "tier": "core",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.6.0"
+    },
+    "runtime": {
+      "configHome": {
+        "kind": "dot-home",
+        "name": ".kiro",
+        "env": [
+          "KIRO_CONFIG_DIR"
+        ]
+      },
+      "localConfigDir": ".kiro",
+      "configFormat": "none",
+      "artifactLayout": {
+        "global": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToKiroSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToKiroAgent"
+          }
+        ],
+        "local": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToKiroSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToKiroAgent"
+          }
+        ]
+      },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
+      "commandStyle": "slash-hyphen",
+      "hooksSurface": "none",
+      "sandboxTier": "none",
+      "supportTier": 2,
+      "installSurface": "profile-marker-only",
+      "writesSharedSettings": false,
+      "permissionWriter": null,
+      "extendedHookEvents": [],
+      "hostIntegration": {
+        "embeddingMode": "declarative",
+        "commandSurface": "slash-file",
+        "dispatch": {
+          "namedDispatch": true,
+          "nested": "undocumented",
+          "maxDepth": "undocumented",
+          "background": true,
+          "subagentToolkit": "full",
+          "backgroundDispatch": "undocumented",
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
+        },
+        "modelMode": "passive",
+        "hookBus": "host",
+        "stateIO": "filesystem",
+        "transport": "mcp",
+        "runtime": "undocumented",
+        "effortSurface": "undocumented"
+      },
+      "hostBehaviors": {
+        "skipSharedHooksInstall": true,
+        "projectInstructionFile": ".kiro/steering/gsd.md",
+        "agentFileExtension": ".json",
+        "omitCompactAgentVariants": true
+      }
+    }
+  },
   "live-dom-uat": {
     "id": "live-dom-uat",
     "role": "feature",
@@ -7196,6 +7295,105 @@ const runtimes = {
       }
     }
   },
+  "kiro": {
+    "id": "kiro",
+    "role": "runtime",
+    "version": "1.14.0",
+    "title": "Kiro",
+    "description": "Kiro (AWS) CLI and IDE — Agent-Skills-shaped flat skills at ~/.kiro/skills/gsd-<name>/SKILL.md invoked as /gsd-<name> with native $ARGUMENTS substitution, JSON custom agents at ~/.kiro/agents/<name>.json (the legacy JSON schema Kiro CLI 2.x and 3.x both read), steering instead of CLAUDE.md, native MCP; declarative config surface; profile-marker install; tier-2 community support.",
+    "tier": "core",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.6.0"
+    },
+    "runtime": {
+      "configHome": {
+        "kind": "dot-home",
+        "name": ".kiro",
+        "env": [
+          "KIRO_CONFIG_DIR"
+        ]
+      },
+      "localConfigDir": ".kiro",
+      "configFormat": "none",
+      "artifactLayout": {
+        "global": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToKiroSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToKiroAgent"
+          }
+        ],
+        "local": [
+          {
+            "kind": "skills",
+            "destSubpath": "skills",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeCommandToKiroSkill"
+          },
+          {
+            "kind": "agents",
+            "destSubpath": "agents",
+            "prefix": "gsd-",
+            "nesting": "flat",
+            "recursive": false,
+            "converter": "convertClaudeAgentToKiroAgent"
+          }
+        ]
+      },
+      "triggerPrecedence": [
+        "skills",
+        "commands"
+      ],
+      "commandStyle": "slash-hyphen",
+      "hooksSurface": "none",
+      "sandboxTier": "none",
+      "supportTier": 2,
+      "installSurface": "profile-marker-only",
+      "writesSharedSettings": false,
+      "permissionWriter": null,
+      "extendedHookEvents": [],
+      "hostIntegration": {
+        "embeddingMode": "declarative",
+        "commandSurface": "slash-file",
+        "dispatch": {
+          "namedDispatch": true,
+          "nested": "undocumented",
+          "maxDepth": "undocumented",
+          "background": true,
+          "subagentToolkit": "full",
+          "backgroundDispatch": "undocumented",
+          "isolation": "none",
+          "maxConcurrency": "undocumented"
+        },
+        "modelMode": "passive",
+        "hookBus": "host",
+        "stateIO": "filesystem",
+        "transport": "mcp",
+        "runtime": "undocumented",
+        "effortSurface": "undocumented"
+      },
+      "hostBehaviors": {
+        "skipSharedHooksInstall": true,
+        "projectInstructionFile": ".kiro/steering/gsd.md",
+        "agentFileExtension": ".json",
+        "omitCompactAgentVariants": true
+      }
+    }
+  },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
@@ -8152,6 +8350,7 @@ const _requiresGraph = {
   "kilo": [],
   "kimi": [],
   "kimi-code": [],
+  "kiro": [],
   "live-dom-uat": [],
   "llama-cpp": [],
   "lm-studio": [],

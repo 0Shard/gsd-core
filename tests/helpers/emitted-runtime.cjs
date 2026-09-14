@@ -679,6 +679,16 @@ function currentManifests({ repoRoot } = {}) {
   const pkgVersion = measuredPackageVersion(repoRoot);
   const manifests = {};
   for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
+    // A family whose runtime the MEASURED tree does not ship (a PR adding a runtime
+    // descriptor measures a base worktree that predates it) has no honest baseline:
+    // the base installer does not know the `--<runtime>` flag and would emit its
+    // claude-default tree instead, which the differential would then report as
+    // hundreds of unattributable removals. Skip it — `reconcileFamilies` sees the
+    // family as ADDED on the current side and attributes it to the registry change,
+    // exactly the "baseline families are enumerated from the ref" contract.
+    if (repoRoot !== undefined && !fs.existsSync(path.join(repoRoot, 'capabilities', runtime, 'capability.json'))) {
+      continue;
+    }
     const { configDir, root } = runMinimalInstall({ runtime, scope, installScript });
     try {
       manifests[name] = buildParityManifest(configDir, root, {

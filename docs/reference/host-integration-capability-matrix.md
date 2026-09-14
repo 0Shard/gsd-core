@@ -726,6 +726,52 @@ Documentation gaps:
 
 ---
 
+## kiro
+
+> Kiro (AWS) is an agentic CLI (`kiro-cli`) and IDE sharing one `~/.kiro/` (global) / `.kiro/` (workspace) configuration tree. Its extensibility surface is configuration files only: Agent-Skills-shaped `SKILL.md` bundles, JSON (2.x + 3.x) / Markdown (3.x) custom agents, Markdown steering files, standalone hook JSON files and an MCP server config. All values below are sourced from the official Kiro docs (kiro.dev/docs). GSD targets the intersection of CLI 2.x and 3.x: skills (invoked as `/gsd-<name>`) and legacy-JSON agents.
+
+| Axis | Value | Source | Evidence |
+|---|---|---|---|
+| embeddingMode | declarative | https://kiro.dev/docs/custom-agents ; https://kiro.dev/docs/cli/2x-reference | Custom agents are "JSON and Markdown configurations with identical fields" at `~/.kiro/agents/[name].json` or `[name].md`; "**Markdown format** added (`.md` files with YAML frontmatter + body as system prompt)"; "**`hooks` moved** to standalone `.kiro/hooks/*.json` files". No in-process programmatic extension API is documented. |
+| commandSurface | slash-file | https://kiro.dev/docs/skills ; https://kiro.dev/docs/cli/terminal-ui | Skills are `SKILL.md` files under `.kiro/skills/<name>/`; "`/skill-name` — Invoke a skill directly by name (e.g., `/pr-review`)"; "If the skill body contains `$ARGUMENTS` or `$` placeholders, text after the slash command is substituted into them" (CLI-only). |
+| modelMode | passive | https://kiro.dev/docs/custom-agents ; https://kiro.dev/docs/cli/v3/agent-config | Per-agent `"model": "claude-sonnet-5"` field and the interactive `/model` command; no programmatic model request/provider API is documented for an extension. |
+| hookBus | host | https://kiro.dev/docs/cli/2x-reference ; https://kiro.dev/docs/cli/v3/agent-config | "`hooks` moved to standalone `.kiro/hooks/*.json` files"; agent-config `hooks` field is "CLI only — inline hook definitions (same schema as `.kiro/hooks/`)"; documented events include `agentSpawn`, `preToolUse`, `fileEdited` — the host fires the events. |
+| stateIO | filesystem | https://kiro.dev/docs/cli/chat/settings ; https://kiro.dev/docs/skills | Settings live at `~/.kiro/settings/cli.json` ("Directly open the configuration file located at ~/.kiro/settings/cli.json"); skills at `~/.kiro/skills/` (global) and `.kiro/skills/` (workspace) — full local filesystem. |
+| transport | mcp | https://kiro.dev/docs/cli/v3/migration-guide ; https://kiro.dev/docs/cli/v3/agent-config | MCP servers are configured in `.kiro/settings/mcp.json` ("Configure AWS MCP server in .kiro/settings/mcp.json"); agent field `includeMcpJson` — "Include workspace `.kiro/settings/mcp.json` servers"; tool tag `@mcp` — "All MCP server tools". Native MCP. |
+| runtime | undocumented | searched: https://kiro.dev/docs/custom-agents ; https://kiro.dev/docs/cli/v3/agent-config ; https://kiro.dev/docs/cli/2x-reference | Kiro is a config-file host with no in-process plugin API, so the docs name no plugin-execution runtime; the CLI's implementation language is not stated in the documentation. Fails closed. |
+| effortSurface | undocumented | https://kiro.dev/docs/cli/terminal-ui | "`/effort` — Set model reasoning effort level (low/medium/high/xhigh/max)" exists only as an interactive slash command; no `--effort`-style flag on the CLI invocation is documented. The vocabulary is `argv` \| `none`, and neither is accurate (same situation as `kimi-code`), so the sentinel is declared and degrades closed. |
+| dispatch.namedDispatch | true | https://kiro.dev/docs/custom-agents/subagents | The main agent "automatically selects agents based on their `description` field, or you can request one explicitly" ("Use the code-reviewer agent to analyze src/auth/ for security issues"); custom agents "committed to `.kiro/agents/`" can be invoked as sub-agents. |
+| dispatch.nested | undocumented | searched: https://kiro.dev/docs/custom-agents/subagents | The docs do not state whether a sub-agent can spawn further sub-agents. |
+| dispatch.maxDepth | undocumented | searched: https://kiro.dev/docs/custom-agents/subagents | No maximum nesting depth is documented. |
+| dispatch.background | true | https://kiro.dev/docs/custom-agents/subagents ; https://kiro.dev/docs/cli/terminal-ui | "Sub-agents run in parallel, each working independently."; "Use `/spawn <task>` to launch a parallel session from the command line"; "Press `Ctrl+G` to monitor subagent activity and spawned sessions in real time". |
+| dispatch.subagentToolkit | full | https://kiro.dev/docs/custom-agents/subagents | "The default sub-agent has the same built-in tools as the main agent - `read`, `write`, `shell`, `web_search`, `web_fetch`, and any configured MCP tools." Custom agents use "that agent's `tools` and `permissions` configuration". |
+| dispatch.backgroundDispatch | undocumented | searched: https://kiro.dev/docs/custom-agents/subagents ; https://kiro.dev/docs/cli/experimental/delegate | Background delegation ("Delegate enables launching and managing asynchronous task processes") is documented as experimental, and nothing states whether a background-spawned sub-agent can itself dispatch further sub-agents. |
+| dispatch.isolation | none | https://kiro.dev/docs/custom-agents/subagents | Sub-agents have "isolated conversation context" but share "workspace file access" and "steering files" with the main agent — no per-agent working-directory or worktree primitive is documented, so same-wave executors would share one tree (#2584). |
+| dispatch.maxConcurrency | undocumented | searched: https://kiro.dev/docs/custom-agents/subagents | "Sub-agents run in parallel" but no concurrent-agent count or cap is documented (#3673). |
+
+Sources consulted:
+- https://kiro.dev/docs/skills
+- https://kiro.dev/docs/custom-agents
+- https://kiro.dev/docs/custom-agents/subagents
+- https://kiro.dev/docs/cli/v3/agent-config
+- https://kiro.dev/docs/cli/v3/migration-guide
+- https://kiro.dev/docs/cli/2x-reference
+- https://kiro.dev/docs/cli/terminal-ui
+- https://kiro.dev/docs/cli/chat/settings
+- https://kiro.dev/docs/cli/experimental/delegate
+- /websites/kiro_dev_cli (Context7)
+
+Documentation gaps:
+- **dispatch.nested / dispatch.maxDepth / dispatch.backgroundDispatch / dispatch.maxConcurrency** — parallel sub-agents are documented, but neither nesting, depth, background re-dispatch nor a concurrency bound is stated; all four carry the sentinel and negotiation flattens dispatch to inline (fail-closed).
+- **runtime** — no plugin-execution runtime is named because there is no plugin API; the axis stays `undocumented` rather than guessing at the CLI's implementation language.
+- **Agent format: legacy JSON, not 3.x Markdown.** GSD emits `agents/gsd-<name>.json` (`hostBehaviors.agentFileExtension`) in the legacy JSON schema because "In CLI 2.x, agent configs were JSON-only" (kiro.dev/docs/cli/2x-reference) and 3.x states "The legacy JSON format ... remains fully supported in V3" (kiro.dev/docs/cli/v3/agent-config) — one artifact serves both CLI generations, whereas the 3.x Markdown agent format is invisible to 2.x. Tool grants use the legacy ids from the migration guide's "Legacy Agent Configuration" example (`fs_read`, `fs_write`, `execute_bash`, `grep`, `glob`) plus `web_fetch`/`web_search`/`todo_list`; MCP grants fold to `@<server>`. The 3.x tag vocabulary (`read`/`write`/`shell`/`web`/`subagent`) is deliberately not used. The docs do not state the default when `tools` is omitted, so the key is emitted whenever the source agent declared tools and omitted only when it declared none. Claude's `*.compact.md` effort variants are not emitted (`hostBehaviors.omitCompactAgentVariants`): Kiro keys agents by the in-file `name`, so a compact copy would register a duplicate.
+- **`$ARGUMENTS` substitution is CLI-only** — "This feature is currently CLI-only"; in the IDE "trailing text is still passed along as extra context to the agent", so skill invocation still carries the user's arguments, just not by placeholder substitution.
+- **configHome env override** — `KIRO_CONFIG_DIR` is a GSD-side install override (mirroring every sibling runtime's `*_CONFIG_DIR`), not a Kiro-documented variable; Kiro itself documents only the fixed `~/.kiro/` and `.kiro/` roots.
+
+EoS migration status: Kiro lands as a pure declarative descriptor (`capabilities/kiro/capability.json`) — no `runtime === 'kiro'` branch in `bin/install.js`; the skills/agents kinds resolve `convertClaudeCommandToKiroSkill` / `convertClaudeAgentToKiroAgent` by name through the layout module, and the shared-hooks exclusion is `hostBehaviors.skipSharedHooksInstall: true` (Kiro has `hooksSurface: "none"`). The only runtime-keyed site is the `case 'kiro':` path-rewrite arm in `src/runtime-artifact-conversion.cts`, the same boilerplate every sibling (`trae`, `codebuddy`, `zcode`, …) carries pending the cross-runtime content-dispatch consolidation. Two upgrades are possible once Kiro documents the surfaces: registering GSD's hook scripts as `.kiro/hooks/*.json` (`hookBus: host` above), and MCP registration via `.kiro/settings/mcp.json`; neither is implemented here.
+
+---
+
 ## zcode
 
 > ZCode (Z.ai) is a desktop Agentic Development Environment for the GLM-5.2 model, distributed as an Electron app. It exposes a Claude-Code-shaped extensibility surface (per-user `~/.zcode/skills/<name>/SKILL.md`, slash commands, named subagents, native MCP, and a plugin system). All values below are sourced verbatim from the official ZCode docs.

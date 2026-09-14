@@ -645,7 +645,14 @@ function convertedAgentsKind(
       // converter. Resolved ONCE per stage() call (not per file — a pure
       // function of configDir/targetDir) via the single shared precedence
       // resolver so kilo and opencode can never diverge (J8).
-      const needsModelOverride = converterName === 'convertClaudeToOpencodeFrontmatter' || converterName === 'convertClaudeToKiloFrontmatter';
+      // kiro joins the options-bag converters: its legacy-JSON agent carries a
+      // per-agent `model`, resolved through the SAME precedence chain
+      // (model_overrides[agent] > model_profile_overrides.kiro.<tier> > the
+      // catalog's kiro tier defaults). Effort is not threaded — Kiro's agent
+      // schema has no effort field, so there is nothing to stamp it into.
+      const needsModelOverride = converterName === 'convertClaudeToOpencodeFrontmatter'
+        || converterName === 'convertClaudeToKiloFrontmatter'
+        || converterName === 'convertClaudeAgentToKiroAgent';
       let converter: (content: string, isGlobal?: boolean, meta?: { agentName: string }) => string;
       if (needsModelOverride) {
         const overrideTargetDir = agentCtx?.targetDir ?? configDir;

@@ -81,8 +81,12 @@ describe('model-catalog: exported enums/maps', () => {
     assert.equal(KNOWN_PROVIDERS.has('openai'), true);
   });
 
-  test('RUNTIMES_WITH_REASONING_EFFORT is codex-only', () => {
-    assert.deepEqual(new Set(RUNTIMES_WITH_REASONING_EFFORT), new Set(['codex']));
+  test('RUNTIMES_WITH_REASONING_EFFORT is codex + kiro', () => {
+    // kiro's tier defaults carry a reasoning_effort alongside the model (the
+    // same gpt-5.6 family as codex). Kiro has no install-time effort channel
+    // (no EFFORT_RENDERING entry, effortSurface undocumented), so the value is
+    // resolver data only — `query resolve-model` reports it; nothing renders it.
+    assert.deepEqual(new Set(RUNTIMES_WITH_REASONING_EFFORT), new Set(['codex', 'kiro']));
   });
 
   test('RUNTIMES_WITH_FAST_MODE is api-only', () => {

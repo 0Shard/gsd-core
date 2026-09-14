@@ -991,6 +991,12 @@ describe('runtime-launcher-parity — agents (#1041)', () => {
     for (const f of files) {
       const rel = path.relative(AGENTS_DIR, f);
       const content = fs.readFileSync(f, 'utf8');
+      // Agents that delegate to the shared resolver reference (@-include) do not
+      // inline the preamble — exempt them, exactly as the workflow subtest above
+      // does (see delegatesToResolverReference / (B2)). gsd-verifier and
+      // gsd-plan-checker delegate because the inline preamble pushed them over
+      // their LARGE-tier hard cap (tests/agent-size-budget.test.cjs).
+      if (delegatesToResolverReference(content)) continue;
       const blocks = extractShellBlocks(content);
 
       // Collect all block lines in document order for flat analysis

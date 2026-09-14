@@ -74,7 +74,9 @@ const RUNTIME_IDS = Object.keys(registry.runtimes);
 
 // Contract-pinned profile split (derived from .host-cli-final.json):
 // programmatic-cli: claude, cline, cursor, hermes, kilo, kimi, opencode, pi, qwen, trae (10)
-// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, kimi-code, windsurf, zcode (8)
+// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, kimi-code, kiro, windsurf, zcode (9)
+// kiro is declarative: its extension surface is config files only (Markdown/JSON
+// agents, SKILL.md bundles, steering, .kiro/hooks/*.json), no in-process plugin API.
 // kimi-code moved programmatic-cli → declarative-cli in #2603: its plugin surface is a
 // `kimi.plugin.json` manifest plus markdown Skills with no in-process programmatic API
 // (docs/en/customization/plugins.md), the same shape as codex. The value had been inherited
@@ -97,6 +99,7 @@ const EXPECTED_PROFILES = {
   codex:       'declarative-cli',
   copilot:     'declarative-cli',
   'kimi-code': 'declarative-cli',
+  kiro:        'declarative-cli',
   windsurf:    'declarative-cli',
   zcode:       'declarative-cli',
   vscode:      'ide',
@@ -337,6 +340,9 @@ describe('ADR-1239 Phase A: hostIntegration descriptors', () => {
     // #2454/#2939: Kimi Code declares background/backgroundDispatch both true, BUT
     // subagentToolkit:'built-in-only' cannot delegate to full subagents → flatten.
     'kimi-code': true,
+    // kiro: sub-agents "run in parallel" (dispatch.background:true) but
+    // backgroundDispatch/nested are undocumented → fail closed → flatten.
+    kiro:        true,
     // #2598: OpenCode's background subagents sit behind the opt-in
     // OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS flag (default false), and the
     // session loop still handles one subtask at a time (upstream #29638, OPEN).

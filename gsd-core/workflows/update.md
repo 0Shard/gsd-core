@@ -444,6 +444,9 @@ fi
 if [ -n "$TRAE_CONFIG_DIR" ]; then
   CACHE_DIRS+=( "$(expand_home "$TRAE_CONFIG_DIR")" )
 fi
+if [ -n "$KIRO_CONFIG_DIR" ]; then
+  CACHE_DIRS+=( "$(expand_home "$KIRO_CONFIG_DIR")" )
+fi
 if [ -n "$QWEN_CONFIG_DIR" ]; then
   CACHE_DIRS+=( "$(expand_home "$QWEN_CONFIG_DIR")" )
 fi
@@ -463,7 +466,7 @@ for dir in "${CACHE_DIRS[@]}"; do
   fi
 done
 
-for dir in .claude .config/opencode .opencode .gemini/antigravity-ide .gemini/antigravity-cli .gemini/antigravity .agents .agent .config/kilo .kilo .codex .cursor .codeium/windsurf .augment .trae .qwen .hermes .codebuddy .cline; do
+for dir in .claude .config/opencode .opencode .gemini/antigravity-ide .gemini/antigravity-cli .gemini/antigravity .agents .agent .config/kilo .kilo .codex .cursor .codeium/windsurf .augment .trae .kiro .qwen .hermes .codebuddy .cline; do
   rm -f "./$dir/cache/gsd-update-check"*.json
   rm -f "$HOME/$dir/cache/gsd-update-check"*.json
 done

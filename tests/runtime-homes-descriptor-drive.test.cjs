@@ -58,7 +58,7 @@ function withEnv(overrides, fn) {
 const ALL_ENV_KEYS = [
   'CLAUDE_CONFIG_DIR', 'CURSOR_CONFIG_DIR', 'CODEX_HOME',
   'GROK_AGENTS_HOME', 'COPILOT_CONFIG_DIR', 'COPILOT_HOME', 'ANTIGRAVITY_CONFIG_DIR',
-  'WINDSURF_CONFIG_DIR', 'AUGMENT_CONFIG_DIR', 'TRAE_CONFIG_DIR', 'QWEN_CONFIG_DIR',
+  'WINDSURF_CONFIG_DIR', 'AUGMENT_CONFIG_DIR', 'TRAE_CONFIG_DIR', 'KIRO_CONFIG_DIR', 'QWEN_CONFIG_DIR',
   'HERMES_HOME', 'CODEBUDDY_CONFIG_DIR', 'CLINE_CONFIG_DIR', 'KIMI_CONFIG_DIR',
   'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG', 'KILO_CONFIG_DIR', 'KILO_CONFIG',
   'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR',
@@ -102,6 +102,7 @@ const GOLDEN_DEFAULTS = {
   cline:       path.join(HOME, '.cline'),
   opencode:    path.join(HOME, '.config', 'opencode'),
   kilo:        path.join(HOME, '.config', 'kilo'),
+  kiro:        path.join(HOME, '.kiro'),
   zcode:       path.join(HOME, '.zcode'),
   pi:          path.join(HOME, '.pi', 'agent'),  // dot-home-nested, no probe (like windsurf)
 };
@@ -150,6 +151,7 @@ describe('descriptor-driven equivalence: env-var overrides', () => {
     { runtime: 'grok',      envKey: 'GROK_AGENTS_HOME',     value: '/custom/grok' },
     { runtime: 'augment',   envKey: 'AUGMENT_CONFIG_DIR',   value: '/custom/augment' },
     { runtime: 'trae',      envKey: 'TRAE_CONFIG_DIR',      value: '/custom/trae' },
+    { runtime: 'kiro',      envKey: 'KIRO_CONFIG_DIR',      value: '/custom/kiro' },
     { runtime: 'qwen',      envKey: 'QWEN_CONFIG_DIR',      value: '/custom/qwen' },
     { runtime: 'hermes',    envKey: 'HERMES_HOME',          value: '/custom/hermes' },
     { runtime: 'codebuddy', envKey: 'CODEBUDDY_CONFIG_DIR', value: '/custom/codebuddy' },
@@ -1220,6 +1222,7 @@ describe('bug #3126: runtime-homes getGlobalConfigDir — defaults', () => {
     ['windsurf',    path.join(os.homedir(), '.codeium', 'windsurf')],
     ['augment',     path.join(os.homedir(), '.augment')],
     ['trae',        path.join(os.homedir(), '.trae')],
+    ['kiro',        path.join(os.homedir(), '.kiro')],
     ['qwen',        path.join(os.homedir(), '.qwen')],
     ['hermes',      path.join(os.homedir(), '.hermes')],
     ['codebuddy',   path.join(os.homedir(), '.codebuddy')],
