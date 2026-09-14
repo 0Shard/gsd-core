@@ -54,6 +54,42 @@ Full roster at `agents/gsd-*.md`. The "Primary doc" column flags whether [`docs/
 | gsd-doc-synthesizer | Synthesizes classified planning docs into a single consolidated context with precedence rules, cycle detection, and three-bucket conflicts report. | `/gsd-ingest-docs` | advanced stub |
 | gsd-mempalace-curator | Ship-time MemPalace curation — diary entry, cross-project tunnel proposals, wing-scoped sync pruning, and extract-learnings → KG mirroring with provenance. | MemPalace capability at `ship:post` | advanced stub |
 
+### Compact Payload Variants (#4407)
+
+One `.compact.md` sibling per agent above, same directory, same stem — ADR-4139 stream 2. Not independently spawned: `cmdAgentSkills`'s non-Claude `#2454` persona fallback serves this file instead of the canonical one when `workflow.compact_content` is on and the sibling is registered; every other consumer (Claude named-subagent dispatch, user-configured `agent_skills`) never reaches it. See `gsd-core/references/compact-content-gate.md` § "Stream 2".
+
+| Agent | Role (one line) | Spawned by | Primary doc |
+|-------|-----------------|------------|-------------|
+| gsd-project-researcher.compact | Token-minimized rewrite of `gsd-project-researcher`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-ui-researcher.compact | Token-minimized rewrite of `gsd-ui-researcher`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-assumptions-analyzer.compact | Token-minimized rewrite of `gsd-assumptions-analyzer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-advisor-researcher.compact | Token-minimized rewrite of `gsd-advisor-researcher`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-research-synthesizer.compact | Token-minimized rewrite of `gsd-research-synthesizer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-roadmapper.compact | Token-minimized rewrite of `gsd-roadmapper`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-integration-checker.compact | Token-minimized rewrite of `gsd-integration-checker`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-ui-checker.compact | Token-minimized rewrite of `gsd-ui-checker`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-nyquist-auditor.compact | Token-minimized rewrite of `gsd-nyquist-auditor`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-ui-auditor.compact | Token-minimized rewrite of `gsd-ui-auditor`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-dom-verifier.compact | Token-minimized rewrite of `gsd-dom-verifier`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-codebase-mapper.compact | Token-minimized rewrite of `gsd-codebase-mapper`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-user-profiler.compact | Token-minimized rewrite of `gsd-user-profiler`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-doc-writer.compact | Token-minimized rewrite of `gsd-doc-writer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-doc-verifier.compact | Token-minimized rewrite of `gsd-doc-verifier`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-security-auditor.compact | Token-minimized rewrite of `gsd-security-auditor`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-pattern-mapper.compact | Token-minimized rewrite of `gsd-pattern-mapper`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-debug-session-manager.compact | Token-minimized rewrite of `gsd-debug-session-manager`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-code-reviewer.compact | Token-minimized rewrite of `gsd-code-reviewer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-code-fixer.compact | Token-minimized rewrite of `gsd-code-fixer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-ai-researcher.compact | Token-minimized rewrite of `gsd-ai-researcher`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-domain-researcher.compact | Token-minimized rewrite of `gsd-domain-researcher`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-eval-planner.compact | Token-minimized rewrite of `gsd-eval-planner`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-eval-auditor.compact | Token-minimized rewrite of `gsd-eval-auditor`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-framework-selector.compact | Token-minimized rewrite of `gsd-framework-selector`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-intel-updater.compact | Token-minimized rewrite of `gsd-intel-updater`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-doc-classifier.compact | Token-minimized rewrite of `gsd-doc-classifier`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-doc-synthesizer.compact | Token-minimized rewrite of `gsd-doc-synthesizer`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+| gsd-mempalace-curator.compact | Token-minimized rewrite of `gsd-mempalace-curator`'s persona, served instead of the canonical file by the seam described above. | `gsd_run query agent-skills` CLI seam (non-Claude persona fallback only) | inventory only |
+
 **Coverage note.** `docs/AGENTS.md` gives full role cards for the primary agents plus concise stubs for the advanced agents. The Agent Tool Permissions Summary in that file covers only the primary agents; the advanced agents' tool lists are captured in their per-agent frontmatter in `agents/gsd-*.md`.
 
 ---
@@ -273,19 +309,21 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 
 ### Workflow Sub-Files
 
-A workflow may own two kinds of sub-file. Both live under `gsd-core/workflows/<workflow>/` and
-neither is separately invocable — the parent workflow reaches them.
+A workflow may own four kinds of sub-file. All live under `gsd-core/workflows/<workflow>/` and
+none is separately invocable — the parent workflow reaches them.
 
 | Subdirectory | What it holds | Manifest family | Roster |
 |---|---|---|---|
 | `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | See `docs/INVENTORY-MANIFEST.json` for the authoritative per-file list |
 | `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `help` |
+| `<workflow>/detail/*.md` | Elaboration content deferred from a workflow spine, read at runtime only when `workflow.compact_content` is `false` (ADR-4139; epic #4139 Phase 2 #4402 established the first example, Phase 3 #4403 added the CI guard, Phase 5 #4405 split the rest of the eager-window corpus worth splitting). | `workflow_detail` | `plan-phase`, `execute-phase`, `docs-update`, `new-project`, `verify-work`, `complete-milestone` |
+| `<workflow>/templates/*.md` | Fill-in template bodies the parent workflow renders at runtime; also referenced as a `FRAGMENT_DIRS` entry in `scripts/lint-response-language-coverage.cjs`. | `workflow_templates` | `discuss-phase` |
 
-Both families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because two
-workflows may each own a step of the same name — `families.workflows` uses bare basenames and
+All four families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because
+two workflows may each own a step of the same name — `families.workflows` uses bare basenames and
 cannot represent these without collision.
 
-**Adding a step or mode file requires no hand-written row here.** Run
+**Adding a step, mode, detail, or template file requires no hand-written row here.** Run
 `node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
 `tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
 in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60 rows that must be
@@ -367,7 +405,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `worktree-branch-check.md` | Canonical spawn-time worktree HEAD/base guard (worktree_branch_check): verify-only and fail-closed — per-agent-branch assertion, protected-ref refusal (#2924), and an exact-base assertion that halts with `exit 42` on mismatch so the orchestrator (worktree lifecycle owner) performs recovery (#48). Embedded into worktree sub-agent prompts at dispatch. |
 | `runtime-aware-dispatch.md` | Runtime-aware subagent dispatch protocol (#2508 Phase 4 Option A): before any `Agent(subagent_type="gsd-*")` call, resolve the type via `gsd_run query resolve-dispatch-type --requested <name> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the name is returned unchanged; on built-in-only runtimes (kimi-code) it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. Documents why a PreToolUse-remap hook (the epic's original Option B) is infeasible — Kimi Code's hook API supports only allow/deny, not tool_input rewriting. |
 | `dispatch-isolation-gate.md` | Canonical gate deciding whether a dispatch site may run an agent isolated (#2584/#2652): resolves `ISOLATION` from the negotiated `dispatch.isolation` capability — never from a runtime id — fails closed to `none`, resolves the host's declared `harnessFlag` instead of hardcoding Claude Code's `isolation="worktree"` literal, and degrades single-agent sites to sequential on `orchestrator-worktree` hosts. Read by `quick.md`, `diagnose-issues.md`, and `execute-plan.md`. |
-| `worktree-path-safety.md` | Worktree guard suite: HEAD assertion, cwd-drift sentinel (step 0a, #3097), and absolute-path guard (step 0b, #3099) — loaded into executor spawn prompts via `<execution_context>`. |
+| `worktree-path-safety.md` | Executor path guards: supplied-root pin (step 0p, #4254 — every mode; execute-phase.md binds the orchestrator-validated root into sequential dispatches as `<project_root_pin>`), cwd-drift sentinel (step 0a, #3097), and absolute-path guard (step 0b, #3099) — loaded into executor spawn prompts via `<execution_context>`. |
 | `untrusted-input-boundary.md` | Shared prompt-injection boundary (#1577) `@`-included by the 10 research/doc-ingest agents (`gsd-project-researcher`, `gsd-phase-researcher`, `gsd-ui-researcher`, `gsd-assumptions-analyzer`, `gsd-advisor-researcher`, `gsd-doc-classifier`, `gsd-doc-synthesizer`, `gsd-research-synthesizer`, `gsd-ai-researcher`, `gsd-domain-researcher`): treat fetched/read text as data-not-instructions, self-scan before use (PromptArmor 2507.15219), task-anchor (2504.20472), and fence quoted text with a fresh random delimiter per wrap (PPA 2506.05739). Prompt-level defense-in-depth (2503.00061); the hook scanner is a separate pattern pre-filter. |
 | `artifact-types.md` | Planning artifact type definitions. |
 | `phase-argument-parsing.md` | Phase argument parsing conventions. |
@@ -387,6 +425,7 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `execute-mvp-tdd.md` | Runtime gate semantics for execute-phase under TDD mode — pre-task failing-test verification, end-of-phase blocking review. |
 | `mvp-concepts.md` | Cross-reference index for the six MVP-related reference files; maps each file to its purpose and which workflow loads it. |
 | `verify-mvp-mode.md` | UAT framing rules for MVP-mode phases — user-flow-first ordering, deferred technical checks, user-story-format guard. |
+| `compact-content-gate.md` | Shared compact-content gate (ADR-4139 Decision 3/4) — the `workflow.compact_content` check and detail-file resolution rule every compact-split workflow spine references, stated once. |
 
 ### Sketch References
 
@@ -603,6 +642,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `planning-scope.cjs` | Frozen `SCOPE` discriminator (`COMPLETE`/`TRUNCATED`/`UNSCOPED`/`UNREADABLE`) distinguishing a genuinely-empty derivation from one computed over a truncated or unscoped input, so callers can branch on the difference instead of reading a plausible zero (ADR-3180) |
 | `planning-snapshot.cjs` | Parsed projection of `.planning/` composed exclusively from the ADR-3180 §7 owners (milestone identity, phase enumeration, phase completion, plan/summary counting, STATE.md current-phase) — exposes only scope-carrying parsed values, never raw document text, so a diagnostic rule cannot re-derive a field's location (ADR-3180 §8.1) |
 | `planning-workspace.cjs` | Planning path/workstream seam (`planningDir`, `planningPaths`, active-workstream routing, `.planning/.lock` orchestration) |
+| `pristine-baseline.cjs` | Hash-first recovery for `gsd-pristine/` baselines stored at an unexpected path (compiled from `src/pristine-baseline.cts`, gitignored; #4145) — `findPristineByHash(pristineDir, recordedHash, skip?)` walks `gsd-pristine/` in deterministic sorted order, skips symlinks, and returns the first file whose SHA-256 equals the recorded `backup-meta.json.pristine_hashes` entry (the same authority the #3657 drift guard trusts); the `skip` set excludes canonical manifest-keyed paths so a relocation never consumes another file's canonical baseline. Shared by `verify-reapply-patches.cjs`'s `verifyFile` (read-only adoption when the strict join misses) and `install.js`'s `saveLocalPatches` (orphan relocation self-heal) so the two readers cannot drift apart again |
 | `project-root.cjs` | Resolves a project root from a starting directory using four heuristics (own `.planning/` guard, `sub_repos` config, `multiRepo` flag, `.git` heuristic) |
 | `profile-output.cjs` | Profile rendering, USER-PROFILE.md and dev-preferences.md generation |
 | `profile-pipeline-command-router.cjs` | ADR-959 capability command router for the profile-pipeline command family — dispatches scan-sessions, extract-messages, profile-sample (pipeline phase) and write-profile, profile-questionnaire, generate-dev-preferences, generate-claude-profile, generate-claude-md (output phase); phase 6 cutover |
@@ -623,6 +663,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `review-lane-descriptor.cjs` | Declared reviewer-lane contract (compiled from `src/review-lane-descriptor.cts`, gitignored; ADR-2782) — the frozen `REVIEWER_LANES` roster, the lane slug grammar, and two pure parity gates: `checkReviewerLaneParity` (descriptor ↔ roster ↔ registry, plus anti-parity against re-added bespoke workflow legs) and `checkReviewerDocsParity` (declared flags and section titles ↔ `docs/COMMANDS.md`, `docs/FEATURES.md` and their locale mirrors; #2800, closes #2781/#2272); exports `REVIEWER_LANES`, `PARITY_VIOLATION`, `DOCS_PARITY_VIOLATION`, `LANE_SLUG_RE` |
 | `review-lane-invocation.cjs` | Pure projection from a declared reviewer lane plus resolved config to a concrete invocation plan (compiled from `src/review-lane-invocation.cts`, gitignored; ADR-2782 Phase 5b) — no filesystem, network or clock; config arrives through a `configGet` seam; exports `resolveLanePlan`, `LANE_UNAVAILABLE` |
 | `review-lane-runner.cjs` | Execution of a reviewer-lane invocation plan (compiled from `src/review-lane-runner.cts`, gitignored; ADR-2782 Phase 5b) — probe, spawn or HTTP call, empty-output policy, egress-host check, and dispatch of the three first-party `handler` modules; exports `runLane`, `probeLane`, `checkEgressHost`, `writeReviewOrStub` |
+| `reviewer-step-dispatch.cjs` | Shared reviewer-step interpreter (compiled from `src/reviewer-step-dispatch.cts`, gitignored; #4209) — reuses `resolveReviewerSelection`/`resolveLanePlan`, builds a metadata-only source-review prompt, fails closed on path/provenance/budget violations before any lane invoke; exports `dispatchReviewerLanes`, `buildSourceReviewPrompt` |
 | `review-reviewer-selection.cjs` | Reviewer selection/normalization helpers for `/gsd-review` default reviewer policy and precedence |
 | `roadmap-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools roadmap` |
 | `health-diagnostic-rules/roadmap-disk-consistency.cjs` | Health-diagnostic rules: ROADMAP-vs-disk phase directory consistency checks (W006, W007), both resolved through the shared `matchPhaseDirs` matcher, ported behavior-preserving from `cmdValidateHealth` (ADR-3180 §8.2/§8.3/§8.5, Phase 11, #3309) |
@@ -703,7 +744,7 @@ Full listing: `hooks/`.
 | Hook | Event | Purpose |
 |------|-------|---------|
 | `gsd-statusline.js` | `statusLine` | Displays model, task, directory, context usage |
-| `gsd-context-monitor.js` | `PostToolUse` / `AfterTool` | Injects agent-facing context warnings at 35%/25% remaining |
+| `gsd-context-monitor.js` | `PostToolUse` / `AfterTool` | Injects agent-facing context warnings at 35%/25% remaining by default (configurable — see [CONFIGURATION.md](CONFIGURATION.md)) |
 | `gsd-check-update.js` | `SessionStart` | Background check for new GSD versions |
 | `gsd-check-update-worker.js` | (worker) | Background worker helper for check-update |
 | `gsd-update-banner.js` | `SessionStart` | Opt-in banner surfacing update availability when GSD statusline isn't used (PR #2795) |

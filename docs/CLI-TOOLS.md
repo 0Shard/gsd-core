@@ -113,7 +113,7 @@ node gsd-tools.cjs state add-decision --summary-file path [--rationale-file path
 node gsd-tools.cjs state add-blocker --text "..."
 node gsd-tools.cjs state resolve-blocker --text "..."
 
-# Record session continuity
+# Record session continuity (at least one of --stopped-at / --resume-file is required)
 node gsd-tools.cjs state record-session --stopped-at "..." [--resume-file path]
 
 # Phase start — update STATE.md Status/Last activity for a new phase
@@ -162,7 +162,7 @@ node gsd-tools.cjs phase next-decimal <phase>
 node gsd-tools.cjs phase add <description>
 
 # Insert decimal phase after existing
-node gsd-tools.cjs phase insert <after> <description>
+node gsd-tools.cjs phase insert <after> <description> [--sibling]
 
 # Remove phase, renumber subsequent
 node gsd-tools.cjs phase remove <phase> [--force]
@@ -433,6 +433,12 @@ node gsd-tools.cjs roadmap analyze
 # Update progress table row from disk
 node gsd-tools.cjs roadmap update-plan-progress <N>
 ```
+
+When the phase has no writable ROADMAP entry — no matching Progress-table row,
+no `### Phase N` detail section, and no checklist bullet this command can update
+(the checklist-only form) — the command declines with `updated: false` and a
+`missing_phase_details` reason instead of claiming success, and leaves
+`ROADMAP.md` byte-identical.
 
 ### Milestone window scope (`roadmap analyze`)
 
@@ -1171,6 +1177,20 @@ from `todos/pending/` to `todos/completed/` and upserts `completed:` and
 `status: completed` inside the file's frontmatter block. Unknown flags are
 rejected loudly.
 
+`<filename>` is a **basename inside the todos root**, not a path. A basename
+guard runs first, before `<filename>` is joined onto any directory: a value
+containing an embedded separator (either `/` or `\`, e.g. `sub/name.md` or
+`sub\name.md`), a value whose own basename differs from itself (e.g.
+`a/../../b.md`, `../sibling.md`), a bare `.` or `..`, an absolute path (e.g.
+`/etc/passwd`), or a NUL byte is rejected as a usage error **before** any file
+is read or moved (#4327, #4652). A traversal that only escapes the `pending`/
+`completed` subdirectory without leaving the todos root (`../sibling.md`) is
+caught by this same guard, not by containment. Containment against the todos
+root still runs afterward as defense-in-depth for the resolved source and
+target paths, so neither half of the move can land outside the root. The
+check covers both halves of the move, and `--dry-run` is rejected on the same
+terms rather than previewing a resolved outside path.
+
 ```bash
 # UAT audit — scan all phases for unresolved items
 node gsd-tools.cjs audit-uat
@@ -1188,8 +1208,10 @@ node gsd-tools.cjs audit-open acknowledge --category <category> --milestone <ver
 node gsd-tools.cjs from-gsd2 [--path <dir>] [--force] [--dry-run]
 
 # Git commit with config checks
-node gsd-tools.cjs commit <message> [--files f1 f2] [--amend] [--no-verify] [--respect-staged]
+node gsd-tools.cjs commit <message> [--files f1 f2] [--files-removed f3 dir/] [--amend] [--no-verify] [--respect-staged]
 ```
+
+> `--files-removed <paths>` (#4208): the caller-declared deletions. A `--files` entry that is missing on disk is skipped, never staged as a deletion (#2014) — so a moved file's old path cannot be recorded through `--files` at all, and the only form that recorded a move was a directory entry, which also commits any unrelated file sitting in that directory. Each `--files-removed` entry names a file, or a directory whose tracked-but-absent files are the removals; those paths are staged as deletions and join the commit pathspec. "Tracked" means in the index or in `HEAD`, so a deletion the caller already staged with `git rm` is committed too; "present" is the path itself (`lstat`), so a symlink counts as present even when its target is gone. A file entry that is still present on disk fails the commit closed (`reason: 'staging_failed'`); a path git never tracked is a no-op. Absence alone is not removal: an index entry that is absent from the worktree by design — a submodule gitlink, a skip-worktree (sparse-checkout) path, an assume-unchanged path, an unmerged entry, an intent-to-add (`git add -N`) entry — is never staged as a deletion; under a directory entry it is left alone like a present file, and named directly (by any spelling that resolves to it) it fails closed naming the state. On a staging failure the rollback puts back every index entry this call removed with its recorded mode and blob (`update-index --cacheinfo`), including on an unborn `HEAD` where `git reset` has nothing to restore from; like the addition-side reset it is best-effort — an index that cannot be written reports the staging error, not a clean rollback. `--files` keeps its skip-if-missing contract unchanged. A move is therefore `--files new/path --files-removed old/path`. GSD's own `close_phase_todos` step (`execute-phase.md`) uses exactly that form, naming each moved todo on both sides rather than passing the two directories: a directory entry would also commit an unrelated todo a concurrent session dropped into `pending/` or `completed/` while the phase was closing.
 
 > `--no-verify`: Skips pre-commit hooks. Used by parallel executor agents during wave-based execution to avoid build lock contention (e.g., cargo lock fights in Rust projects). The orchestrator runs hooks once after each wave completes. Do not use `--no-verify` during sequential execution — let hooks run normally.
 > `--files <paths>` **staging behaviour**: by default, `--files` runs `git add -- <path>` for each named file before committing. This overwrites any per-hunk staging set up via `git add -p`. Pass `--respect-staged` to skip the `git add` step and commit only what is already in the index within the requested pathspec. If nothing is staged within that scope, the command returns `{ committed: false, reason: 'nothing staged' }` without error. The trailing `-- <paths>` pathspec on the commit is applied under both modes, so files staged outside the `--files` scope are never included (#3061 invariant).
@@ -1225,7 +1247,7 @@ node gsd-tools.cjs restore-custom-files --config-dir <config-dir> --apply
 | Field | Meaning |
 |---|---|
 | `path` | Path relative to the config dir — where the file came from and goes back to |
-| `outcome` | `eligible` (plan mode) · `restored` · `skipped_destination_managed` · `skipped_destination_exists` · `skipped_copy_failed` · `skipped_unsafe_path` |
+| `outcome` | `eligible` (plan mode) · `restored` · `already_present` · `skipped_destination_managed` · `skipped_destination_exists` · `skipped_copy_failed` · `skipped_unsafe_path` |
 | `warnings` | Advisory `{code, detail}` findings from the compatibility pass; never blocks a restore |
 
 Warning codes: `destination_managed`, `destination_exists`,
@@ -1240,9 +1262,12 @@ retired, invokes a `/gsd:` command that no longer exists, or is missing the
 Three things the restore never does: it never deletes the backup, it never
 overwrites a path the new release ships (`skipped_destination_managed`), and it
 never overwrites a different file already on disk
-(`skipped_destination_exists`). Symlinked backup entries are skipped outright
-rather than followed (`skipped_unsafe_path`). A single unwritable entry is
-reported and the remaining entries still restore.
+(`skipped_destination_exists`). A destination that is already byte-identical to
+its backup is reported as `already_present` and left untouched — it counts
+toward neither `eligible_count` nor `restored_count`, so a plan run after a
+successful restore no longer offers the same file again. Symlinked backup
+entries are skipped outright rather than followed (`skipped_unsafe_path`). A
+single unwritable entry is reported and the remaining entries still restore.
 
 ---
 

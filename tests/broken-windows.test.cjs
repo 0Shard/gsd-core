@@ -24,11 +24,20 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 
-const { createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
+const {
+  createTempDir,
+  cleanup,
+  runGsdTools,
+  TOOLS_PATH,
+  TEST_ENV_BASE,
+} = require('./helpers.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
 
 const brokenWindowsLib = require('../gsd-core/bin/lib/broken-windows.cjs');
+const lockMod = require('../gsd-core/bin/lib/capability-lock.cjs');
 const {
   REASON,
   WindowsError,
@@ -183,6 +192,25 @@ describe('broken-windows: appendWindow', () => {
     // 10 cells = 11 cell-separator pipes per row (leading + 9 internal + trailing).
     assert.equal(unescapedPipes, 11, 'table row must have exactly 11 unescaped pipes (10 cells) — backslash-pipe in description must NOT add a split');
   });
+
+  // #4487: phase numbers are unique only within one active phases/ directory —
+  // milestone complete archives phases and frees their numbers for reuse, so
+  // two milestones can produce entries sharing the same `phase` value with
+  // nothing to distinguish them. appendWindow itself is pure (no I/O), so the
+  // milestone value is a caller-supplied input, not resolved here — this pins
+  // that it flows through untouched, and defaults to null when omitted
+  // (an entry recorded before this field existed reads the same way).
+  test('milestone input flows through to the entry (#4487)', () => {
+    const led = emptyLedger('now');
+    const { entry } = appendWindow(led, makeEntry({ milestone: 'v2.0' }), { now: 't' });
+    assert.equal(entry.milestone, 'v2.0');
+  });
+
+  test('milestone defaults to null when the caller omits it (#4487)', () => {
+    const led = emptyLedger('now');
+    const { entry } = appendWindow(led, makeEntry(), { now: 't' });
+    assert.equal(entry.milestone, null);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -201,6 +229,13 @@ describe('broken-windows: markWaived', () => {
     assert.equal(led.open_count, 0);
     assert.equal(led.waived_count, 1);
     assert.equal(openCount(led), 0); // waived does not block
+  });
+
+  test('waive preserves the entry\'s milestone (#4487 — object-spread transition must not drop it)', () => {
+    let led = emptyLedger('now');
+    ({ ledger: led } = appendWindow(led, makeEntry({ milestone: 'v2.0' }), { now: 't1' }));
+    led = markWaived(led, 1, 'reason', { now: 't2' });
+    assert.equal(led.entries[0].milestone, 'v2.0');
   });
 
   test('waive with empty reason throws (boundary: limit-1 = 0 chars)', () => {
@@ -264,6 +299,13 @@ describe('broken-windows: markFixed', () => {
     assert.equal(openCount(led), 0);
   });
 
+  test('fixed preserves the entry\'s milestone (#4487 — object-spread transition must not drop it)', () => {
+    let led = emptyLedger('now');
+    ({ ledger: led } = appendWindow(led, makeEntry({ milestone: 'v2.0' }), { now: 't1' }));
+    led = markFixed(led, 1, { now: 't2' });
+    assert.equal(led.entries[0].milestone, 'v2.0');
+  });
+
   test('fixed on unknown id throws', () => {
     const led = emptyLedger('now');
     assert.throws(
@@ -299,6 +341,12 @@ describe('broken-windows: parse/render roundtrip property', () => {
     phase: arbPhase,
     description: arbText,
     status: arbStatus,
+    // #4487: three-way split so the roundtrip property actually exercises
+    // all of "key absent" (pre-#4487 entry), "explicit null" (recorded but
+    // unresolvable), and "a real string" -- these three states must each
+    // survive parse/render identically, which is exactly the distinction
+    // validateEntryShape/renderLedger have to get right.
+    milestoneCase: fc.constantFrom('absent', 'null', 'string'),
   }).map((e) => ({
     id: e.id,
     kind: e.kind,
@@ -310,6 +358,7 @@ describe('broken-windows: parse/render roundtrip property', () => {
     reason: e.status === 'waived' ? 'justified' : '',
     recorded_at: '2026-07-19T00:00:00Z',
     resolved_at: e.status === 'open' ? null : '2026-07-19T01:00:00Z',
+    ...(e.milestoneCase === 'absent' ? {} : { milestone: e.milestoneCase === 'null' ? null : 'v2.0' }),
   }));
 
   const arbLedger = fc.array(arbEntry, { maxLength: 6 }).map((entries) => {
@@ -394,6 +443,58 @@ describe('broken-windows: parseLedger fail-closed', () => {
       '',
     ].join('\n');
     assert.throws(() => parseLedger(raw), reasonIs(REASON.WINDOWS_LEDGER_MALFORMED));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4487: milestone field backward compatibility
+// ---------------------------------------------------------------------------
+
+describe('broken-windows: parseLedger backward compatibility for the #4487 milestone field', () => {
+  const rawWithNoMilestoneKey = [
+    '---',
+    'schema_version: 1',
+    'open_count: 1',
+    'waived_count: 0',
+    'fixed_count: 0',
+    'total_count: 1',
+    'last_updated: 2026-01-01T00:00:00.000Z',
+    '---',
+    '',
+    '```json',
+    JSON.stringify([
+      {
+        id: 1,
+        kind: 'stub',
+        phase: '3',
+        file: '',
+        line: null,
+        description: 'old entry',
+        status: 'open',
+        reason: '',
+        recorded_at: '2026-01-01T00:00:00.000Z',
+        resolved_at: null,
+        // deliberately no `milestone` key
+      },
+    ], null, 2),
+    '```',
+    '',
+  ].join('\n');
+
+  test('an entry with NO milestone key at all (pre-#4487 shape) parses without error, reading as undefined', () => {
+    const ledger = parseLedger(rawWithNoMilestoneKey);
+    // Not `null`: an explicit null is the "recorded, but unresolvable"
+    // signal appendWindow stamps on NEW entries. A pre-#4487 entry never
+    // recorded anything -- it must read as genuinely absent (`undefined`),
+    // the only representation JSON.stringify will also omit on re-render.
+    assert.equal(ledger.entries[0].milestone, undefined, 'an entry recorded before this field existed must read as milestone: undefined (absent), not null');
+    assert.equal('milestone' in ledger.entries[0], false, 'the key itself must not be materialized for a pre-#4487 entry');
+  });
+
+  test('re-rendering a parsed pre-#4487 entry does not stamp a milestone key into the JSON (no drive-by churn)', () => {
+    const ledger = parseLedger(rawWithNoMilestoneKey);
+    const rendered = renderLedger(ledger);
+    assert.doesNotMatch(rendered, /"milestone"/, 'parsing then re-rendering a legacy entry must not introduce milestone: null noise the entry never had');
   });
 });
 
@@ -722,6 +823,57 @@ describe('broken-windows CLI: windows append', () => {
     const obj2 = JSON.parse(res2.output);
     assert.equal(obj2.ledger.open_count, 1);
     assert.equal(obj2.ledger.entries[0].id, 1);
+  });
+
+  // #4487: cmdWindowsAppend (unlike the pure appendWindow) resolves the
+  // milestone itself from disk, reusing workstream-inventory.cts's existing
+  // readCurrentMilestoneVersion (STATE.md `milestone:` frontmatter first,
+  // ROADMAP.md in-progress marker as fallback) rather than a new parallel
+  // implementation.
+  test('append stamps the milestone resolved from STATE.md frontmatter (#4487)', (t) => {
+    const tmp = createTempDir('bw-append-milestone-state-');
+    t.after(() => cleanup(tmp));
+    fs.mkdirSync(path.join(tmp, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, '.planning', 'STATE.md'),
+      '---\nmilestone: v2.0\n---\n# Project State\n',
+      'utf-8',
+    );
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'stub', '--phase', '5', '--description', 'x'],
+      tmp,
+    );
+    assert.equal(res.success, true, `stderr: ${res.error || ''}`);
+    assert.equal(JSON.parse(res.output).entry.milestone, 'v2.0');
+  });
+
+  test('append stamps null when no milestone is resolvable (#4487)', (t) => {
+    const tmp = createTempDir('bw-append-milestone-none-');
+    t.after(() => cleanup(tmp));
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'stub', '--phase', '5', '--description', 'x'],
+      tmp,
+    );
+    assert.equal(res.success, true, `stderr: ${res.error || ''}`);
+    assert.equal(JSON.parse(res.output).entry.milestone, null);
+  });
+
+  test('append falls back to the ROADMAP in-progress marker when STATE.md has no milestone field (#4487)', (t) => {
+    const tmp = createTempDir('bw-append-milestone-roadmap-fallback-');
+    t.after(() => cleanup(tmp));
+    fs.mkdirSync(path.join(tmp, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.planning', 'STATE.md'), '---\nstatus: executing\n---\n# Project State\n', 'utf-8');
+    fs.writeFileSync(
+      path.join(tmp, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n## 🚧 **v3.1** — In Progress\n',
+      'utf-8',
+    );
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'stub', '--phase', '5', '--description', 'x'],
+      tmp,
+    );
+    assert.equal(res.success, true, `stderr: ${res.error || ''}`);
+    assert.equal(JSON.parse(res.output).entry.milestone, 'v3.1');
   });
 
   test('append a second entry gets id=2', (t) => {
@@ -1628,5 +1780,225 @@ describe('#1950-H2 / #3689: writeLedgerAtomic pre-image read failure', () => {
       pristine,
       'an unreadable pre-image must not be overwritten',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3780: parallel writers must not silently lose ledger mutations
+//
+// cmdWindowsAppend/Waive/MarkFixed each ran an unlocked read-compute-write
+// cycle ending in an atomic rename: two parallel invocations read the same
+// snapshot, computed the same nextId, and the second rename won — the first
+// mutation was silently lost while its invocation still reported ok:true
+// (a false-green /gsd-ship gate, since the ship decision reads open_count).
+// The fix serializes the mutating commands on a `.planning/.WINDOWS.lock`
+// ledger lock backed by the shared capability-lock primitive (the
+// capability-consent precedent: waitForFresh + raised budget, typed throw
+// when the lock cannot be acquired). Readers stay lock-free.
+// ---------------------------------------------------------------------------
+
+describe('#3780: parallel writers serialize on the ledger lock', () => {
+  const lockRelPath = path.join('.planning', '.WINDOWS.lock');
+
+  /**
+   * The sync process seam cannot interleave two writers in one thread, and a
+   * concurrency regression needs genuinely concurrent children. Async spawn,
+   * bounded by the CLI-probe class timeout, env built exactly the way
+   * runGsdTools builds it (process env + TEST_ENV_BASE).
+   */
+  function spawnAppend(tmp, description) {
+    return new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [TOOLS_PATH, 'windows', 'append', '--kind', 'todo', '--phase', '1', '--description', description],
+        { cwd: tmp, env: { ...process.env, ...TEST_ENV_BASE } },
+      );
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      const timer = setTimeout(() => child.kill('SIGKILL'), PROBE_TIMEOUT_MS);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        resolve({ code, stdout, stderr });
+      });
+    });
+  }
+
+  function readEntries(tmp) {
+    const raw = fs.readFileSync(path.join(tmp, '.planning', LEDGER_FILE_NAME), 'utf8');
+    return parseLedger(raw).entries;
+  }
+
+  /** Acquire the ledger lock as a stand-in live writer (same-host, never stolen). */
+  function acquireHeldLock(tmp) {
+    const handle = lockMod.acquireLock(path.join(tmp, lockRelPath), { maxAttempts: 1 });
+    assert.ok(handle, 'test setup: the test process must be able to acquire the ledger lock');
+    return handle;
+  }
+
+  test('two concurrent gsd-tools append processes both land their entries', async (t) => {
+    const tmp = createTempDir('bw-3780-race-');
+    t.after(() => cleanup(tmp));
+
+    const [a, b] = await Promise.all([
+      spawnAppend(tmp, 'writer-A'),
+      spawnAppend(tmp, 'writer-B'),
+    ]);
+
+    assert.equal(a.code, 0, `writer-A must exit 0, stderr: ${a.stderr}`);
+    assert.equal(b.code, 0, `writer-B must exit 0, stderr: ${b.stderr}`);
+    assert.equal(JSON.parse(a.stdout).ok, true, 'writer-A must observe success');
+    assert.equal(JSON.parse(b.stdout).ok, true, 'writer-B must observe success');
+
+    const entries = readEntries(tmp);
+    assert.equal(entries.length, 2, 'both appends must be present in the ledger');
+    assert.deepEqual(entries.map((e) => e.id).sort(), [1, 2], 'ids must be distinct — no shared nextId');
+    assert.deepEqual(
+      entries.map((e) => e.description).sort(),
+      ['writer-A', 'writer-B'],
+      'neither description may be lost',
+    );
+  });
+
+  test('append refuses typed while another writer holds the ledger lock, and proceeds after release', (t) => {
+    const tmp = createTempDir('bw-3780-held-append-');
+    t.after(() => cleanup(tmp));
+    const handle = acquireHeldLock(tmp);
+    t.after(() => lockMod.releaseLock(handle));
+
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'blocked writer'],
+      tmp,
+      { GSD_JSON_ERRORS: '1' },
+    );
+    assert.equal(res.success, false, 'append must refuse while the ledger lock is held by a live writer');
+    const parsed = JSON.parse(res.error);
+    // String literal, not REASON.WINDOWS_LEDGER_LOCK — the constant does not
+    // exist on the pre-fix module and `undefined === undefined` would pass
+    // vacuously (the #3689 precedent at the table-drift assertion).
+    assert.equal(parsed.reason, 'windows_ledger_lock', `expected typed lock reason, got: ${res.error}`);
+    assert.equal(
+      fs.existsSync(path.join(tmp, '.planning', LEDGER_FILE_NAME)),
+      false,
+      'a refused append must not write the ledger',
+    );
+
+    // After release the same mutation proceeds — the refusal was contention,
+    // not corruption.
+    lockMod.releaseLock(handle);
+    const res2 = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'after release'],
+      tmp,
+    );
+    assert.equal(res2.success, true, `post-release append must succeed: ${res2.error || ''}`);
+    assert.equal(JSON.parse(res2.output).entry.description, 'after release');
+  });
+
+  test('append releases the ledger lock after success', (t) => {
+    const tmp = createTempDir('bw-3780-release-ok-');
+    t.after(() => cleanup(tmp));
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'solo'],
+      tmp,
+    );
+    assert.equal(res.success, true, `stderr: ${res.error || ''}`);
+    assert.equal(
+      fs.existsSync(path.join(tmp, lockRelPath)),
+      false,
+      'no lock file may survive a successful append',
+    );
+  });
+
+  test('append releases the ledger lock even when the append itself fails', (t) => {
+    const tmp = createTempDir('bw-3780-release-fail-');
+    t.after(() => cleanup(tmp));
+    const bad = runGsdTools(
+      ['windows', 'append', '--kind', 'no-such-kind', '--phase', '1', '--description', 'x'],
+      tmp,
+    );
+    assert.equal(bad.success, false, 'invalid kind must fail as before');
+    assert.equal(
+      fs.existsSync(path.join(tmp, lockRelPath)),
+      false,
+      'no lock file may survive a failed append',
+    );
+    const good = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'retry'],
+      tmp,
+    );
+    assert.equal(good.success, true, `a valid append after a failed one must proceed: ${good.error || ''}`);
+  });
+
+  test('waive refuses typed while the ledger lock is held and proceeds after release', (t) => {
+    const tmp = createTempDir('bw-3780-held-waive-');
+    t.after(() => cleanup(tmp));
+    const seed = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'entry'],
+      tmp,
+    );
+    assert.equal(seed.success, true, `seed append failed: ${seed.error || ''}`);
+    const handle = acquireHeldLock(tmp);
+    t.after(() => lockMod.releaseLock(handle));
+
+    const res = runGsdTools(['windows', 'waive', '1', 'waiver reason'], tmp, { GSD_JSON_ERRORS: '1' });
+    assert.equal(res.success, false, 'waive must refuse while the ledger lock is held');
+    const parsed = JSON.parse(res.error);
+    assert.equal(parsed.reason, 'windows_ledger_lock', `expected typed lock reason, got: ${res.error}`);
+
+    lockMod.releaseLock(handle);
+    const res2 = runGsdTools(['windows', 'waive', '1', 'waiver reason'], tmp);
+    assert.equal(res2.success, true, `post-release waive must succeed: ${res2.error || ''}`);
+  });
+
+  test('fixed refuses typed while the ledger lock is held', (t) => {
+    const tmp = createTempDir('bw-3780-held-fixed-');
+    t.after(() => cleanup(tmp));
+    const seed = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '1', '--description', 'entry'],
+      tmp,
+    );
+    assert.equal(seed.success, true, `seed append failed: ${seed.error || ''}`);
+    const handle = acquireHeldLock(tmp);
+    t.after(() => lockMod.releaseLock(handle));
+
+    const res = runGsdTools(['windows', 'fixed', '1'], tmp, { GSD_JSON_ERRORS: '1' });
+    assert.equal(res.success, false, 'fixed must refuse while the ledger lock is held');
+    const parsed = JSON.parse(res.error);
+    assert.equal(parsed.reason, 'windows_ledger_lock', `expected typed lock reason, got: ${res.error}`);
+  });
+
+  test('status stays lock-free — reads do not block on the writer lock', (t) => {
+    const tmp = createTempDir('bw-3780-status-free-');
+    t.after(() => cleanup(tmp));
+    const handle = acquireHeldLock(tmp);
+    t.after(() => lockMod.releaseLock(handle));
+    const res = runGsdTools(['windows', 'status', '--raw'], tmp);
+    assert.equal(res.success, true, `status must not take the writer lock: ${res.error || ''}`);
+    assert.equal(JSON.parse(res.output).ledger.open_count, 0);
+  });
+
+  test('REASON enum gains WINDOWS_LEDGER_LOCK and stays frozen+closed', () => {
+    assert.equal(Object.isFrozen(REASON), true);
+    // Assert on the VALUES (the wire codes --json-errors can emit), not
+    // Object.keys — the keys are the UPPER_CASE identifiers. Closure over
+    // all 14 codes is the contract: adding/removing a code must update this
+    // list in the same commit (the three-coordinated-changes rule).
+    assert.deepEqual(Object.values(REASON).sort(), [
+      'windows_already_resolved',
+      'windows_append_missing_field',
+      'windows_id_not_found',
+      'windows_invalid_file',
+      'windows_invalid_id',
+      'windows_invalid_kind',
+      'windows_invalid_text',
+      'windows_ledger_lock',
+      'windows_ledger_malformed',
+      'windows_ledger_missing',
+      'windows_ledger_table_drift',
+      'windows_ok',
+      'windows_usage',
+      'windows_waive_reason_empty',
+    ]);
   });
 });

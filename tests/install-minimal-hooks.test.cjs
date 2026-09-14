@@ -20,7 +20,7 @@
 
 process.env.GSD_TEST_MODE = '1';
 
-const { test, describe, beforeEach, afterEach, before } = require('node:test');
+const { test, describe, beforeEach, afterEach, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,6 +28,21 @@ const os = require('node:os');
 
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+
+const {
+  PROBE_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+  FIXTURE_HOOK_TIMEOUT_SECONDS,
+} = require('./helpers/timeouts.cjs');
+
+/**
+ * Bounds executing a single already-staged hook script directly (not the
+ * installer itself, just the emitted script under a real node process).
+ * 30000ms digits coincide with the shared BUILD_TIMEOUT_MS, but this is a
+ * different operation class (running staged output vs. bundling it), so it
+ * is kept as its own local constant rather than aliased onto that norm.
+ */
+const INSTALLED_HOOK_EXEC_TIMEOUT_MS = 30000;
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -115,41 +130,36 @@ describe('install-profiles: MINIMAL_SKILL_ALLOWLIST', () => {
 
 describe('install: --help profile counts match PROFILES (#834)', () => {
   function helpText() {
-    const r = runNode([INSTALL_SCRIPT, '--help'], { env: installerEnv(), timeoutMs: 15000 });
+    const r = runNode([INSTALL_SCRIPT, '--help'], { env: installerEnv(), timeoutMs: PROBE_TIMEOUT_MS });
     throwIfFailed(r, `node ${INSTALL_SCRIPT} --help`);
     return r.stdout;
   }
 
-  test('core line advertises PROFILES.core.length main-loop skills', () => {
+  test('core/standard/full lines advertise correct, drift-tracked skill counts', () => {
     const out = helpText();
-    const m = out.match(/core\s+—\s+~?(\d+)\s+main-loop skills/);
-    assert.ok(m, `--help must advertise a core profile skill count; got:\n${out}`);
+
+    const mCore = out.match(/core\s+—\s+~?(\d+)\s+main-loop skills/);
+    assert.ok(mCore, `--help must advertise a core profile skill count; got:\n${out}`);
     assert.strictEqual(
-      Number(m[1]),
+      Number(mCore[1]),
       PROFILES.core.length,
-      `--help core count (${m[1]}) must equal PROFILES.core.length (${PROFILES.core.length})`,
+      `--help core count (${mCore[1]}) must equal PROFILES.core.length (${PROFILES.core.length})`,
     );
-  });
 
-  test('standard line advertises PROFILES.standard.length skills', () => {
-    const out = helpText();
-    const m = out.match(/standard\s+—\s+~?(\d+)\s+skills/);
-    assert.ok(m, `--help must advertise a standard profile skill count; got:\n${out}`);
+    const mStandard = out.match(/standard\s+—\s+~?(\d+)\s+skills/);
+    assert.ok(mStandard, `--help must advertise a standard profile skill count; got:\n${out}`);
     assert.strictEqual(
-      Number(m[1]),
+      Number(mStandard[1]),
       PROFILES.standard.length,
-      `--help standard count (${m[1]}) must equal PROFILES.standard.length (${PROFILES.standard.length})`,
+      `--help standard count (${mStandard[1]}) must equal PROFILES.standard.length (${PROFILES.standard.length})`,
     );
-  });
 
-  test('full line does not hardcode a drift-prone skill count', () => {
-    const out = helpText();
-    const m = out.match(/full\s+—\s+([^\n]*?)\s+\(default\)/);
-    assert.ok(m, `--help must advertise a full profile line; got:\n${out}`);
+    const mFull = out.match(/full\s+—\s+([^\n]*?)\s+\(default\)/);
+    assert.ok(mFull, `--help must advertise a full profile line; got:\n${out}`);
     assert.doesNotMatch(
-      m[1],
+      mFull[1],
       /\d/,
-      `--help full line must not hardcode a numeric skill count (drifts); got: "${m[1]}"`,
+      `--help full line must not hardcode a numeric skill count (drifts); got: "${mFull[1]}"`,
     );
   });
 });
@@ -351,41 +361,36 @@ describe('install-profiles: allowlist scope guards', () => {
 
 // ─── Section 10: --minimal install — per-runtime E2E (spawned) ───────────────
 
-describe('install: --minimal honoured for every runtime in --global mode', () => {
+describe('install: --minimal honoured for every runtime, on-disk matches manifest', () => {
   for (const runtime of SKILL_RUNTIMES) {
-    test(`${runtime} --global --minimal: mode=minimal, correct skills, zero agents`, () => {
-      const { manifest, root } = runMinimalInstall({ runtime, scope: 'global', extraArgs: ['--minimal'] });
-      try {
-        assert.ok(manifest, `${runtime} global must produce manifest`);
-        assert.strictEqual(manifest.mode, 'minimal');
-        assert.deepStrictEqual(
-          [...manifestSkillSet(manifest)].sort(),
-          [...MINIMAL_SKILL_ALLOWLIST].sort(),
-        );
-        assert.strictEqual(manifestAgentCount(manifest), 0);
-      } finally {
-        cleanup(root);
-      }
-    });
-  }
-});
+    for (const scope of ['global', 'local']) {
+      test(`${runtime} --${scope} --minimal: mode, skills, zero agents, on-disk matches manifest`, () => {
+        const { manifest, configDir, root } = runMinimalInstall({ runtime, scope, extraArgs: ['--minimal'] });
+        try {
+          assert.ok(manifest, `${runtime} ${scope} must produce manifest`);
+          assert.strictEqual(manifest.mode, 'minimal');
+          assert.deepStrictEqual(
+            [...manifestSkillSet(manifest)].sort(),
+            [...MINIMAL_SKILL_ALLOWLIST].sort(),
+          );
+          assert.strictEqual(manifestAgentCount(manifest), 0);
 
-describe('install: --minimal honoured for every runtime in --local mode', () => {
-  for (const runtime of SKILL_RUNTIMES) {
-    test(`${runtime} --local --minimal: mode=minimal, correct skills, zero agents`, () => {
-      const { manifest, root } = runMinimalInstall({ runtime, scope: 'local', extraArgs: ['--minimal'] });
-      try {
-        assert.ok(manifest, `${runtime} local must produce manifest`);
-        assert.strictEqual(manifest.mode, 'minimal');
-        assert.deepStrictEqual(
-          [...manifestSkillSet(manifest)].sort(),
-          [...MINIMAL_SKILL_ALLOWLIST].sort(),
-        );
-        assert.strictEqual(manifestAgentCount(manifest), 0);
-      } finally {
-        cleanup(root);
-      }
-    });
+          const onDisk = collectSkillBasenamesOnDiskSandboxed(configDir, runtime, scope, root);
+          const inManifest = manifestSkillSet(manifest);
+          assert.deepStrictEqual([...onDisk].sort(), [...inManifest].sort());
+          // Not the shared listAgentFiles() helper: asserts on the INSTALLED
+          // dest dir (must be empty in --minimal mode), not the source roster.
+          const agentsDir = path.join(configDir, 'agents');
+          if (fs.existsSync(agentsDir)) {
+            const gsdAgents = fs.readdirSync(agentsDir)
+              .filter(f => f.startsWith('gsd-') && f.endsWith('.md'));
+            assert.deepStrictEqual(gsdAgents, []);
+          }
+        } finally {
+          cleanup(root);
+        }
+      });
+    }
   }
 });
 
@@ -407,35 +412,35 @@ describe('install: Cline --minimal (rules-based, no skills/ dir)', () => {
   }
 });
 
-describe('install: on-disk skill files match manifest for --minimal', () => {
-  for (const runtime of SKILL_RUNTIMES) {
-    for (const scope of ['global', 'local']) {
-      test(`${runtime} --${scope} --minimal: on-disk matches manifest`, () => {
-        const { manifest, configDir, root } = runMinimalInstall({
-          runtime, scope, extraArgs: ['--minimal'],
-        });
-        try {
-          assert.ok(manifest);
-          const onDisk = collectSkillBasenamesOnDiskSandboxed(configDir, runtime, scope, root);
-          const inManifest = manifestSkillSet(manifest);
-          assert.deepStrictEqual([...onDisk].sort(), [...inManifest].sort());
-          // Not the shared listAgentFiles() helper: asserts on the INSTALLED
-          // dest dir (must be empty in --minimal mode), not the source roster.
-          const agentsDir = path.join(configDir, 'agents');
-          if (fs.existsSync(agentsDir)) {
-            const gsdAgents = fs.readdirSync(agentsDir)
-              .filter(f => f.startsWith('gsd-') && f.endsWith('.md'));
-            assert.deepStrictEqual(gsdAgents, []);
-          }
-        } finally {
-          cleanup(root);
-        }
-      });
-    }
-  }
-});
-
 // ─── Section 11: --minimal manifest mode + downgrade ─────────────────────────
+
+// Shared across "manifest records mode" and "install-minimal-backcompat": both
+// describe blocks below independently re-installed the IDENTICAL
+// `--claude --global --minimal` configuration just to check different fields
+// of the same manifest/profile-marker output. Install it once and derive
+// everything both sets of tests need.
+let _sharedMinimalManifestInstall;
+function sharedMinimalManifestInstall() {
+  if (_sharedMinimalManifestInstall) return _sharedMinimalManifestInstall;
+  const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-minimal-shared-'));
+  runNode(
+    [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, '--minimal'],
+    { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
+  );
+  const manifestPath = path.join(targetDir, MANIFEST_NAME);
+  const m = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};
+  const skillCount = Object.keys(m.files || {}).filter(
+    k => k.startsWith('skills/') && k.endsWith('/SKILL.md'),
+  ).length;
+  const markerPath = path.join(targetDir, '.gsd-profile');
+  const profileMarker = fs.existsSync(markerPath) ? fs.readFileSync(markerPath, 'utf8').trim() : null;
+  const agentCount = Object.keys(m.files || {}).filter(k => k.startsWith('agents/')).length;
+  _sharedMinimalManifestInstall = { targetDir, mode: m.mode, skillCount, agentCount, profileMarker };
+  return _sharedMinimalManifestInstall;
+}
+after(() => {
+  if (_sharedMinimalManifestInstall) cleanup(_sharedMinimalManifestInstall.targetDir);
+});
 
 describe('install: manifest records mode for both profiles', () => {
   function manifestModeAfterInstall(extraArgs) {
@@ -443,7 +448,7 @@ describe('install: manifest records mode for both profiles', () => {
     try {
       runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { env: installerEnv(), timeoutMs: 120000 },
+        { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: '<no manifest>', skillCount: 0, agentCount: 0 };
@@ -467,7 +472,7 @@ describe('install: manifest records mode for both profiles', () => {
   });
 
   test('--minimal records mode: "minimal" with exactly 8 skills and 0 agents', () => {
-    const r = manifestModeAfterInstall(['--minimal']);
+    const r = sharedMinimalManifestInstall();
     assert.strictEqual(r.mode, 'minimal');
     assert.strictEqual(r.skillCount, 8);
     assert.strictEqual(r.agentCount, 0);
@@ -496,7 +501,7 @@ describe('install-minimal-backcompat: --minimal and --profile=core produce same 
     try {
       runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { env: installerEnv(), timeoutMs: 120000 },
+        { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: null, skillCount: 0, profileMarker: null };
@@ -514,13 +519,13 @@ describe('install-minimal-backcompat: --minimal and --profile=core produce same 
   }
 
   test('--minimal produces mode "minimal" with exactly 8 skills', () => {
-    const r = installAndGetManifest(['--minimal']);
+    const r = sharedMinimalManifestInstall();
     assert.strictEqual(r.mode, 'minimal');
     assert.strictEqual(r.skillCount, 8);
   });
 
   test('--minimal writes .gsd-profile marker "core"', () => {
-    const r = installAndGetManifest(['--minimal']);
+    const r = sharedMinimalManifestInstall();
     assert.strictEqual(r.profileMarker, 'core');
   });
 
@@ -572,7 +577,7 @@ describe('install: Codex full → minimal downgrade cleans stale agent state', (
       // config.toml (both under targetDir), so the sandbox has no effect on intent.
       const result = runNode(
         [INSTALL_SCRIPT, '--codex', '--global', '--config-dir', targetDir, '--minimal'],
-        { env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }), timeoutMs: 120000 },
+        { env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }), timeoutMs: INSTALL_TIMEOUT_MS },
       );
       assert.ok(result.stdout || result.stderr);
 
@@ -609,7 +614,7 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
 
       runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, '--minimal'],
-        { env: installerEnv(), timeoutMs: 120000 },
+        { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
       );
 
       const remaining = fs.existsSync(agentsDir) ? fs.readdirSync(agentsDir) : [];
@@ -701,7 +706,7 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
     try {
       const result = runNode(
         [INSTALL_SCRIPT, `--${runtime}`, '--global', '--config-dir', targetDir],
-        { env: installerEnv(), timeoutMs: 120000 },
+        { env: installerEnv(), timeoutMs: INSTALL_TIMEOUT_MS },
       );
       assert.strictEqual(result.exitCode, 0,
         `installer exited with status ${result.exitCode} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -2861,7 +2866,7 @@ function runInstaller(configDir) {
   // in install-smoke.yml).
   throwIfFailed(
     runNode([INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
-      timeoutMs: 120000,
+      timeoutMs: INSTALL_TIMEOUT_MS,
       env: {
         ...process.env,
         CLAUDE_CONFIG_DIR: configDir,
@@ -2887,35 +2892,27 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
     cleanup(tmpDir);
   });
 
-  test('gsd-session-state.sh is present after install', () => {
+  test('gsd-session-state.sh, gsd-validate-commit.sh, gsd-phase-boundary.sh, and all SH_HOOKS are present after install', () => {
     const hooksDir = runInstaller(tmpDir);
-    const target = path.join(hooksDir, 'gsd-session-state.sh');
+
+    const sessionStateTarget = path.join(hooksDir, 'gsd-session-state.sh');
     assert.ok(
-      fs.existsSync(target),
+      fs.existsSync(sessionStateTarget),
       'gsd-session-state.sh must be installed to hooks/ — missing file causes SessionStart hook errors'
     );
-  });
 
-  test('gsd-validate-commit.sh is present after install', () => {
-    const hooksDir = runInstaller(tmpDir);
-    const target = path.join(hooksDir, 'gsd-validate-commit.sh');
+    const validateCommitTarget = path.join(hooksDir, 'gsd-validate-commit.sh');
     assert.ok(
-      fs.existsSync(target),
+      fs.existsSync(validateCommitTarget),
       'gsd-validate-commit.sh must be installed to hooks/ — missing file causes PreToolUse hook errors'
     );
-  });
 
-  test('gsd-phase-boundary.sh is present after install', () => {
-    const hooksDir = runInstaller(tmpDir);
-    const target = path.join(hooksDir, 'gsd-phase-boundary.sh');
+    const phaseBoundaryTarget = path.join(hooksDir, 'gsd-phase-boundary.sh');
     assert.ok(
-      fs.existsSync(target),
+      fs.existsSync(phaseBoundaryTarget),
       'gsd-phase-boundary.sh must be installed to hooks/ — missing file causes PostToolUse hook errors'
     );
-  });
 
-  test('all three .sh hooks are present after a single install', () => {
-    const hooksDir = runInstaller(tmpDir);
     for (const hook of SH_HOOKS) {
       assert.ok(
         fs.existsSync(path.join(hooksDir, hook)),
@@ -2988,7 +2985,7 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
     // child's env.
     throwIfFailed(
       runNode([INSTALL_SCRIPT, '--codex', '--global', '--yes', '--no-sdk', '--config-dir', configDir], {
-        timeoutMs: 120000,
+        timeoutMs: INSTALL_TIMEOUT_MS,
         env: { ...process.env, HOME: configDir, USERPROFILE: configDir },
       }),
       `node ${INSTALL_SCRIPT} --codex --global --config-dir ${configDir}`,
@@ -2996,41 +2993,28 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
     return path.join(configDir, 'hooks');
   }
 
-  test('the installed context-monitor hook LOADS AND RUNS, not merely exists', () => {
-    const hooksDir = installCodex(tmpDir);
-    const hook = path.join(hooksDir, 'gsd-context-monitor.js');
-    assert.ok(fs.existsSync(hook), 'precondition: the hook itself must be staged');
-
-    // The actual defect. Before the fix this exited 1 with
-    // "Cannot find module './lib/hook-exit.js'".
-    // `exitCode`, not `status`: the process seam returns its own shape
-    // ({outcome, exitCode, stdout, stderr, ...}) and `status` reads undefined —
-    // which would compare unequal to 0 and pass this row for the wrong reason
-    // if the polarity were ever flipped.
-    const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
-    assert.strictEqual(
-      result.outcome, 'exited',
-      `the hook must run to completion, not time out or be killed. outcome=${result.outcome}`,
-    );
-    assert.strictEqual(
-      result.exitCode, 0,
-      'the installed Codex hook must load and exit 0 — a MODULE_NOT_FOUND at load fires on every '
-      + `registered event and is invisible to the installer's own exit code. stderr: ${result.stderr}`,
-    );
-    assert.doesNotMatch(
-      String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
-      'no missing-module error may reach stderr',
-    );
-  });
-
-  // AC4: this is the row that stops the bug recurring. It derives the
-  // requirement graph from the SHIPPED files rather than restating today's three
-  // helpers, so a Codex-bundled hook that grows a new lib dependency fails here
-  // instead of in a user's session.
-  test('every helper required by a staged Codex hook — transitively — is staged', () => {
+  test('#2586: no longer staged, dependency closure empty, staged set equals closure', () => {
+    // Was: "the installed context-monitor hook LOADS AND RUNS, not merely
+    // exists" — that row's premise (Codex ships this hook) is exactly what
+    // #2586 removes: its only documented metrics source is Claude's own
+    // statusline hook, which Codex never installs, so every registered Codex
+    // event was a guaranteed silent no-op. The #4087 bug class this describe
+    // block guards (a staged hook requiring an unshipped hooks/lib/ helper)
+    // remains covered live via Windsurf's own guards — see the
+    // "#4087 review: Windsurf install..." describe block below, unaffected
+    // by this change.
     const hooksDir = installCodex(tmpDir);
     const libDir = path.join(hooksDir, 'lib');
 
+    assert.strictEqual(fs.existsSync(path.join(hooksDir, 'gsd-context-monitor.js')), false,
+      'gsd-context-monitor.js must not be staged for Codex post-#2586');
+    assert.strictEqual(fs.existsSync(libDir), false,
+      'hooks/lib/ must not exist at all — nothing else Codex stages requires a lib/ helper');
+
+    // AC4: this proves the requirement graph derived from the SHIPPED files
+    // rather than restating today's helpers, so a Codex-bundled hook that
+    // grows a new lib dependency fails here instead of in a user's session.
+    //
     // Seed from hook scripts: only the explicit './lib/X' spelling is a lib
     // requirement. A bare './X' from a hook script is a sibling in hooks/
     // (gsd-check-update-worker.js requires './managed-hooks-registry.cjs'),
@@ -3052,11 +3036,17 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
       if (!/\.(js|cjs)$/.test(entry)) continue;
       scan(fs.readFileSync(full, 'utf8'), seedRe);
     }
-    assert.ok(
-      required.size > 0,
-      'precondition: at least one staged Codex hook must require a ./lib/ helper — if this ever '
-      + 'goes to zero the bundle changed and this row silently stops testing anything',
-    );
+    // #2586: gsd-context-monitor.js was the only staged Codex hook requiring
+    // a ./lib/ helper; it is no longer staged for Codex at all, so the
+    // dependency closure is correctly empty. This row still proves the
+    // GRAMMAR holds (whatever IS required must be staged) — it is just that
+    // "whatever is required" is now the empty set for Codex specifically.
+    // The non-trivial case (closure size > 0) is covered live by the
+    // "#4087 review: Windsurf install..." describe block below.
+    assert.strictEqual(required.size, 0,
+      'no staged Codex hook should require a ./lib/ helper post-#2586 — if this becomes non-zero, '
+      + 'extend this row (do not just raise the bar back to ">0") so the new dependency stays proven');
+    assert.strictEqual(fs.existsSync(libDir), false, 'hooks/lib/ must not exist when nothing requires it');
 
     // Walk to a fixed point, exactly as the installer must.
     const checked = new Set();
@@ -3073,6 +3063,65 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
       scan(fs.readFileSync(staged, 'utf8'), libRe);
       next = [...required].find((f) => !checked.has(f));
     }
+
+    // Was: "fewer staged than available, and graphify absent". That passes while
+    // over-staging (an extra git-cmd.js keeps the count below the total and
+    // leaves graphify absent), so it did not prove its own title — the #3579
+    // boundary is that helpers nothing requires must NOT ship (review of #4087).
+    // Now compared as SETS, with the difference asserted in both directions.
+    const stagedLibs = fs.existsSync(libDir) ? fs.readdirSync(libDir).sort() : [];
+    // #2586: Codex's closure is now legitimately empty (gsd-context-monitor.js,
+    // the only staged Codex hook that ever required a helper, is no longer
+    // staged) — the deepStrictEqual below is still the real assertion and
+    // holds for the empty case too; the non-empty case remains covered live
+    // by the "#4087 review: Windsurf install..." describe block below.
+    assert.strictEqual(stagedLibs.length, 0, 'no helpers should be staged for Codex post-#2586');
+
+    // Derive the closure independently of the installer.
+    const seedRe3 = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
+    const libRe3 = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
+    const srcLibDir = path.join(__dirname, '..', 'hooks', 'lib');
+    const required3 = new Set();
+    const scan3 = (source, re) => {
+      re.lastIndex = 0;
+      let m;
+      while ((m = re.exec(source)) !== null) {
+        if (/[A-Za-z0-9]/.test(m[1])) required3.add(m[1]);
+      }
+    };
+    const resolveName = (name) => [name, `${name}.js`, `${name}.cjs`]
+      .find((c) => fs.existsSync(path.join(srcLibDir, c)));
+
+    for (const entry of fs.readdirSync(hooksDir)) {
+      const full = path.join(hooksDir, entry);
+      if (!fs.statSync(full).isFile() || !/\.(js|cjs)$/.test(entry)) continue;
+      scan3(fs.readFileSync(full, 'utf8'), seedRe3);
+    }
+    const closure3 = new Set();
+    let next3 = [...required3].find((f) => !closure3.has(resolveName(f) || f));
+    while (next3 !== undefined) {
+      const resolved = resolveName(next3);
+      assert.ok(resolved, `hooks/lib/${next3} is required but absent from source — packaging bug`);
+      closure3.add(resolved);
+      scan3(fs.readFileSync(path.join(srcLibDir, resolved), 'utf8'), libRe3);
+      next3 = [...required3].find((f) => !closure3.has(resolveName(f) || f));
+    }
+
+    const expected3 = [...closure3].sort();
+    assert.deepStrictEqual(
+      stagedLibs, expected3,
+      'the staged helper set must equal the dependency closure exactly. Extra files violate the '
+      + '#3579 boundary (helpers no Codex hook requires must not ship); missing files mean a hook '
+      + `throws MODULE_NOT_FOUND at load. staged=${JSON.stringify(stagedLibs)} `
+      + `expected=${JSON.stringify(expected3)}`,
+    );
+    // Non-vacuity: the source dir must hold MORE than the closure, or an
+    // over-staging bug would be undetectable by this comparison.
+    const available3 = fs.readdirSync(srcLibDir);
+    assert.ok(
+      available3.length > expected3.length,
+      `precondition: source must offer more helpers than the closure needs (available=${available3.length}, closure=${expected3.length})`,
+    );
   });
 
   // The #3579 boundary this fix must preserve: derive what is needed, do not
@@ -3151,64 +3200,6 @@ describe('#4087 regression: Codex install stages the hook helpers its hooks requ
       );
     });
   });
-
-  test('the staged helper set EQUALS the dependency closure — no more, no less', () => {
-    // Was: "fewer staged than available, and graphify absent". That passes while
-    // over-staging (an extra git-cmd.js keeps the count below the total and
-    // leaves graphify absent), so it did not prove its own title — the #3579
-    // boundary is that helpers nothing requires must NOT ship (review of #4087).
-    // Now compared as SETS, with the difference asserted in both directions.
-    const hooksDir = installCodex(tmpDir);
-    const libDir = path.join(hooksDir, 'lib');
-    const stagedLibs = fs.existsSync(libDir) ? fs.readdirSync(libDir).sort() : [];
-    assert.ok(stagedLibs.length > 0, 'precondition: some helper must have been staged');
-
-    // Derive the closure independently of the installer.
-    const seedRe = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
-    const libRe = /require\(\s*['"]\.\/(?:lib\/)?([A-Za-z0-9._-]+)['"]\s*\)/g;
-    const srcLibDir = path.join(__dirname, '..', 'hooks', 'lib');
-    const required = new Set();
-    const scan = (source, re) => {
-      re.lastIndex = 0;
-      let m;
-      while ((m = re.exec(source)) !== null) {
-        if (/[A-Za-z0-9]/.test(m[1])) required.add(m[1]);
-      }
-    };
-    const resolveName = (name) => [name, `${name}.js`, `${name}.cjs`]
-      .find((c) => fs.existsSync(path.join(srcLibDir, c)));
-
-    for (const entry of fs.readdirSync(hooksDir)) {
-      const full = path.join(hooksDir, entry);
-      if (!fs.statSync(full).isFile() || !/\.(js|cjs)$/.test(entry)) continue;
-      scan(fs.readFileSync(full, 'utf8'), seedRe);
-    }
-    const closure = new Set();
-    let next = [...required].find((f) => !closure.has(resolveName(f) || f));
-    while (next !== undefined) {
-      const resolved = resolveName(next);
-      assert.ok(resolved, `hooks/lib/${next} is required but absent from source — packaging bug`);
-      closure.add(resolved);
-      scan(fs.readFileSync(path.join(srcLibDir, resolved), 'utf8'), libRe);
-      next = [...required].find((f) => !closure.has(resolveName(f) || f));
-    }
-
-    const expected = [...closure].sort();
-    assert.deepStrictEqual(
-      stagedLibs, expected,
-      'the staged helper set must equal the dependency closure exactly. Extra files violate the '
-      + '#3579 boundary (helpers no Codex hook requires must not ship); missing files mean a hook '
-      + `throws MODULE_NOT_FOUND at load. staged=${JSON.stringify(stagedLibs)} `
-      + `expected=${JSON.stringify(expected)}`,
-    );
-    // Non-vacuity: the source dir must hold MORE than the closure, or an
-    // over-staging bug would be undetectable by this comparison.
-    const available = fs.readdirSync(srcLibDir);
-    assert.ok(
-      available.length > expected.length,
-      `precondition: source must offer more helpers than the closure needs (available=${available.length}, closure=${expected.length})`,
-    );
-  });
 });
 
 // ─── #3023: pi must not stage its shared-hooks bundle in pi's reserved hooks/ ──
@@ -3248,7 +3239,7 @@ describe('#4087 review: Windsurf install stages the hook helpers its hooks requi
     // HOME/USERPROFILE sandboxed for the CHILD, for the same reason as installCodex.
     throwIfFailed(
       runNode([INSTALL_SCRIPT, '--windsurf', '--global', '--yes', '--config-dir', configDir], {
-        timeoutMs: 120000,
+        timeoutMs: INSTALL_TIMEOUT_MS,
         env: { ...process.env, HOME: configDir, USERPROFILE: configDir },
       }),
       `node ${INSTALL_SCRIPT} --windsurf --global --config-dir ${configDir}`,
@@ -3256,12 +3247,13 @@ describe('#4087 review: Windsurf install stages the hook helpers its hooks requi
     return path.join(configDir, 'hooks');
   }
 
-  test('both installed Windsurf guards LOAD AND RUN, not merely exist', () => {
+  test('both installed Windsurf guards LOAD AND RUN, and their transitive helpers are staged', () => {
     const hooksDir = installWindsurf(tmpDir);
+
     for (const script of ['gsd-windsurf-pre-write.js', 'gsd-windsurf-pre-command.js']) {
       const hook = path.join(hooksDir, script);
       assert.ok(fs.existsSync(hook), `precondition: ${script} must be staged`);
-      const result = runNode([hook], { timeoutMs: 30000, input: '{}', env: { ...process.env } });
+      const result = runNode([hook], { timeoutMs: INSTALLED_HOOK_EXEC_TIMEOUT_MS, input: '{}', env: { ...process.env } });
       assert.strictEqual(result.outcome, 'exited',
         `${script} must run to completion, not time out or be killed. outcome=${result.outcome}`);
       assert.strictEqual(result.exitCode, 0,
@@ -3270,10 +3262,7 @@ describe('#4087 review: Windsurf install stages the hook helpers its hooks requi
       assert.doesNotMatch(String(result.stderr || ''), /MODULE_NOT_FOUND|Cannot find module/,
         `no missing-module error may reach stderr for ${script}`);
     }
-  });
 
-  test('the helpers the Windsurf guards require are staged, transitively', () => {
-    const hooksDir = installWindsurf(tmpDir);
     const libDir = path.join(hooksDir, 'lib');
     assert.ok(fs.existsSync(libDir), 'hooks/lib/ must be staged for Windsurf');
     // Direct requires of the two guards, plus what hook-exit.js itself requires
@@ -3292,8 +3281,8 @@ describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory
   const PI_BUNDLE_DIR = 'gsd-hooks';
 
   for (const scope of ['local', 'global']) {
-    test(`pi ${scope} install does not create the host-reserved hooks/ directory`, (t) => {
-      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+    test(`pi ${scope} install: no host-reserved hooks/ dir, bundle staged under ${PI_BUNDLE_DIR}/, manifested`, (t) => {
+      const { manifest, configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
       t.after(() => cleanup(root));
 
       const reserved = path.join(configDir, PI_RESERVED_DIR);
@@ -3303,11 +3292,6 @@ describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory
         `pi reserves <configDir>/${PI_RESERVED_DIR} as its deprecated extension location; ` +
         `GSD must not create it (found ${reserved})`
       );
-    });
-
-    test(`pi ${scope} install stages the shared hooks bundle under ${PI_BUNDLE_DIR}/`, (t) => {
-      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
-      t.after(() => cleanup(root));
 
       const bundle = path.join(configDir, PI_BUNDLE_DIR);
       assert.equal(
@@ -3331,11 +3315,6 @@ describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory
         true,
         'the CommonJS marker must live inside the bundle directory'
       );
-    });
-
-    test(`pi ${scope} install manifests the bundle under ${PI_BUNDLE_DIR}/`, (t) => {
-      const { manifest, root } = runMinimalInstall({ runtime: 'pi', scope });
-      t.after(() => cleanup(root));
 
       assert.ok(manifest && manifest.files, 'pi install must write a file manifest');
       const keys = Object.keys(manifest.files);
@@ -3427,7 +3406,7 @@ describe('bug #3981: blocking-guard timeout budget + migration', () => {
         hooks: {
           PreToolUse: [{
             matcher: 'Write|Edit',
-            hooks: [{ type: 'command', command: `node ${path.join(targetDir, 'hooks', guard)}`, timeout: 5 }],
+            hooks: [{ type: 'command', command: `node ${path.join(targetDir, 'hooks', guard)}`, timeout: FIXTURE_HOOK_TIMEOUT_SECONDS }],
           }],
         },
       };
@@ -3459,7 +3438,7 @@ describe('bug #3981: blocking-guard timeout budget + migration', () => {
   });
 
   test('non-managed timeout:5 entries are left alone (#3981)', () => {
-    const mine = { type: 'command', command: 'node /usr/local/bin/my-own-hook.js', timeout: 5 };
+    const mine = { type: 'command', command: 'node /usr/local/bin/my-own-hook.js', timeout: FIXTURE_HOOK_TIMEOUT_SECONDS };
     const settings = { hooks: { PreToolUse: [{ matcher: 'Write', hooks: [mine] }] } };
     const localCmd = (hookFile) => `node ${path.join(targetDir, 'hooks', hookFile)}`;
     captureConsole(() => {

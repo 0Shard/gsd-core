@@ -41,6 +41,7 @@ const { tmpdir } = require('os');
 const { pathToFileURL } = require('url');
 const { execFileSync } = require('child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const { suiteOf } = require('./lib/suite-detection.cjs');
 const {
   resolveLiveConfigRoots,
   resolveExtraWatchTargets,
@@ -179,8 +180,6 @@ function ensureBuiltHooks(overrides = {}) {
     runBuild();
   }
 }
-const MARKED_SUITES = ['integration', 'install', 'security', 'slow', 'qa'];
-
 // Recursively collect *.test.cjs files under dir, returning paths relative to dir.
 // Skips node_modules to avoid accidentally picking up decoy files.
 function walkTestFiles(dir, relBase) {
@@ -658,6 +657,87 @@ function packChunks(files, { weightOf, maxWeight, maxChars, fixedOverhead }) {
   }
 }
 
+// 2026-09-07 (PR #4497 CI, Windows full test shard 2/3, chunk 3/8): the
+// Windows-only budget cut in main() (60 -> 40, 2026-09-06 / PR #4428) still
+// was not enough — codex-config.test.cjs (weight 17.87, genuinely measured)
+// was packed alongside 39 other files and the chunk still exceeded the 600s
+// backstop. Two documented incidents in as many days, at two different
+// Windows budget settings, both centered on this one file: it is not a
+// "this chunk got unlucky today" case, it is this file's weight being
+// disproportionate enough (~45% of the post-cut Windows budget alone) that
+// ANY companion files sharing its chunk are gambling with the remaining
+// headroom — and per .github/workflows/test.yml's own note on this lane,
+// "adding one test file reshuffled 115 of 268 unit files between shards", so
+// which files end up as that gamble's companions is not something a future
+// PR can predict or control.
+//
+// 2026-09-10 (epic #4589 Phase 2/#4591, #4603): the SAME failure hit
+// state.test.cjs (weight 21.35, heavier than codex-config.test.cjs) on
+// `next`'s own push-triggered Tests run, `conformance test (windows-latest,
+// 24, shard 2/3)` chunk 3/6 — 600019ms, killed. Root cause is not a new
+// outlier: state.test.cjs was already this heavy before Phase 2 existed.
+// What changed is the POOL it gets packed against. Phase 2's
+// platform-conformance-tier job packs only the ~546 conformance-tier files
+// per shard (vs. the ~950-file full suite `packChunks` used to balance
+// against), so the same absolute-weight outlier now represents a much
+// larger share of a much smaller, more homogeneous pool — the LPT packer has
+// fewer light files available to pad around it. This is a structural risk of
+// the smaller conformance-tier pool, not a one-off.
+//
+// A first attempt at this fix hand-picked a handful of candidates by eye and
+// missed three heavier files — caught by an isolated code-review pass, which
+// is the reason this comment says "systematically", not "we looked at the
+// obvious ones". The corrected method: codex-config.test.cjs's own weight
+// (17.87) is 44.7% of the Windows MAX_FILES_PER_CHUNK budget (40) — that
+// ratio, not a round "~45%", is the actual established threshold, since it's
+// the exact file two prior documented incidents already proved dangerous.
+// Computing weight/budget for EVERY unit-suite file in the timings table
+// (`suiteOf(f) === null` — the same eligibility test that decides
+// conformance-tier membership) and keeping everything at or above that ratio
+// found SEVEN files, not four: run-tests-harness.test.cjs (31.23, 78.1%),
+// emitted-attribution.test.cjs (26.47, 66.2%), install-minimal-hooks.test.cjs
+// (24.45, 61.1%), phase.test.cjs (23.31, 58.3%), state.test.cjs (21.35,
+// 53.4%), config.test.cjs (19.76, 49.4%), install.test.cjs (18.84, 47.1%) —
+// each at or above codex-config.test.cjs's own proven-dangerous ratio.
+//
+// Isolating all eight (these seven plus codex-config.test.cjs) into their own
+// chunk, unconditionally, on every platform, removes the gamble at its
+// source rather than tuning the shared budget again around a moving target:
+// no other file's packing changes (these files simply never enter the shared
+// pool `packChunks` balances), and no future single-file addition can
+// silently reintroduce this exact failure by landing in one of their chunks.
+// If a future profiling pass genuinely speeds any of them up, this isolation
+// can be revisited — this is a packing-side mitigation for KNOWN files' cost,
+// not a statement that the cost is irreducible. If a FUTURE file's measured
+// weight ever crosses this same ratio, it needs the same treatment; nothing
+// currently re-runs this sweep automatically when the timings table changes.
+const ISOLATED_HEAVY_FILES = new Set([
+  'codex-config.test.cjs',
+  'run-tests-harness.test.cjs',
+  'emitted-attribution.test.cjs',
+  'install-minimal-hooks.test.cjs',
+  'phase.test.cjs',
+  'state.test.cjs',
+  'config.test.cjs',
+  'install.test.cjs',
+]);
+
+/**
+ * Split `files` (absolute or repo-relative paths) into `{isolated, packable}`
+ * by basename membership in `ISOLATED_HEAVY_FILES`. Pure and order-preserving
+ * within each half, so it is unit-testable without spawning `main()` as a
+ * subprocess. `isolated` files are meant to become their own single-file
+ * chunk each; `packable` files are meant to go through `packChunks` as before.
+ */
+function partitionIsolatedFiles(files) {
+  const isolated = [];
+  const packable = [];
+  for (const f of files) {
+    (ISOLATED_HEAVY_FILES.has(f.split(/[\\/]/).pop()) ? isolated : packable).push(f);
+  }
+  return { isolated, packable };
+}
+
 function parseArgs(argv) {
   let suite = null;
   let seen = false;
@@ -753,20 +833,8 @@ function parseArgs(argv) {
   return { suite, files, filesFrom, shard };
 }
 
-// Return the marked suite name embedded in a filename, or null if it's unmarked.
-// foo.security.test.cjs -> "security"
-// foo.test.cjs          -> null (unit)
-// Accepts either a bare filename or a relative subdir path; classification is
-// based on the basename only so subdir paths classify identically to root files.
-function suiteOf(filename) {
-  const name = basename(filename);
-  if (!name.endsWith('.test.cjs')) return null;
-  const base = name.slice(0, -'.test.cjs'.length);
-  const lastDot = base.lastIndexOf('.');
-  if (lastDot === -1) return null;
-  const marker = base.slice(lastDot + 1);
-  return MARKED_SUITES.includes(marker) ? marker : null;
-}
+// suiteOf (and its backing MARKED_SUITES) is imported from
+// ./lib/suite-detection.cjs — see that module's header comment for why.
 
 function selectFiles(allFiles, suite) {
   if (suite === null || suite === 'all') {
@@ -1273,7 +1341,21 @@ function main() {
   // node process (also relieving per-process memory pressure from 170+ files at once).
   // Lowered from 90 to 60 after #1575 — macOS Node 22 shard 2/3 chunk 2 (~80 files
   // including state.test.cjs, perf-*, worktree-cleanup) exceeded 600s with 90.
-  const MAX_FILES_PER_CHUNK = positiveNumberEnv(process.env.RUN_TESTS_MAX_FILES_PER_CHUNK, 60);
+  //
+  // 2026-09-06 (PR #4428 CI): a Windows full-matrix chunk (chunk 3/6, ~32/60
+  // weight-budget units, dominated by codex-config.test.cjs at a genuinely
+  // MEASURED weight of 17.87 — not a stale-table miss) still exceeded the
+  // 600s per-chunk backstop. The weight table's calibration does not
+  // transfer 1:1 to the Windows runner for install/subprocess-heavy work —
+  // it needs a smaller budget than Linux/macOS to stay inside the same
+  // wall-clock ceiling. Windows gets its own, lower cap (~33% reduction,
+  // proportionate to the >30% single-file share codex-config.test.cjs alone
+  // consumed of that chunk's budget); other platforms are unaffected.
+  const DEFAULT_MAX_FILES_PER_CHUNK = process.platform === 'win32' ? 40 : 60;
+  const MAX_FILES_PER_CHUNK = positiveNumberEnv(
+    process.env.RUN_TESTS_MAX_FILES_PER_CHUNK,
+    DEFAULT_MAX_FILES_PER_CHUNK,
+  );
   // #2088 established that file COUNT is a poor proxy for a chunk's wall-clock:
   // install-heavy files (real installs) cost ~10x a unit file, and when several
   // land in the SAME chunk it blows the 600s backstop while unit-only chunks
@@ -1392,12 +1474,17 @@ function main() {
   const reporterOverhead = reporterArgs.reduce((sum, a) => sum + a.length + 1, 0);
 
   const FIXED_OVERHEAD = process.execPath.length + '--test'.length + concurrency.length + (forceExit ? '--test-force-exit'.length + 1 : 0) + reporterOverhead + 8;
-  const chunks = packChunks(selected, {
-    weightOf: fileWeightOf(),
-    maxWeight: MAX_FILES_PER_CHUNK,
-    maxChars: MAX_CMDLINE_CHARS,
-    fixedOverhead: FIXED_OVERHEAD,
-  });
+
+  const { isolated: isolatedFiles, packable: packableFiles } = partitionIsolatedFiles(selected);
+  const chunks = [
+    ...isolatedFiles.map((f) => [f]),
+    ...packChunks(packableFiles, {
+      weightOf: fileWeightOf(),
+      maxWeight: MAX_FILES_PER_CHUNK,
+      maxChars: MAX_CMDLINE_CHARS,
+      fixedOverhead: FIXED_OVERHEAD,
+    }),
+  ];
 
   // A chunk that still hangs (a leak the backstop somehow misses, or a wedged
   // subprocess) must fail loudly rather than silently burn the job's wall-clock
@@ -1647,6 +1734,10 @@ module.exports = {
   loadTestTimings,
   makeFileWeigher,
   packChunks,
+  // 2026-09-07 (PR #4497): the codex-config.test.cjs chunk-isolation fix —
+  // see the comment above their definitions.
+  ISOLATED_HEAVY_FILES,
+  partitionIsolatedFiles,
   analyzeChunkEvents,
   DEFAULT_TIMINGS_PATH,
   // Exported so callers (tests/ci-test-scope.test.cjs) can assert the

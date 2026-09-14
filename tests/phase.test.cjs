@@ -19,6 +19,11 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const {
+  GIT_TIMEOUT_MS,
+  LOOP_HOOK_POINT_CLI_TIMEOUT_MS,
+  PROBE_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 // `phase complete` against a real STATE.md rewrite; matches the 60000ms bound
 // already used for the same CLI call elsewhere in this file (runPhaseComplete
@@ -526,6 +531,30 @@ describe('phase next-decimal command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.found, false, 'base phase not found');
     assert.strictEqual(output.next, '06.1', 'should still suggest 06.1');
+  });
+
+  // #4569: cmdPhaseNextDecimal migrated to the shared scanExistingDecimalPhaseNumbers
+  // helper (also consumed by cmdPhaseInsert), which counts a checklist-only decimal
+  // bullet even when no heading and no on-disk directory exist for it yet.
+  test('#4569: sees a checklist-only decimal with no heading and no on-disk directory', () => {
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-something'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+
+- [ ] Phase 3.1: Something
+`
+    );
+
+    const result = runGsdTools('phase next-decimal 3', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.next, '03.2', 'checklist-only 3.1 must be counted, not just headings/dirs');
+    assert.deepStrictEqual(output.existing, ['03.1'], 'checklist-only decimal listed as existing');
   });
 });
 
@@ -2504,7 +2533,7 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
   const activeDirs = [];
 
   function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000 });
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS });
   }
 
   function initRepo(repoDir) {
@@ -2657,6 +2686,279 @@ describe('phase add allocation vs sibling git worktrees (#3849)', () => {
     } finally {
       cleanup(tmp);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// workstream-scoped phase allocation vs sibling git worktrees (#4225)
+//
+// The #3849 widening horizon (collectSiblingWorktreePhaseNums) scans each
+// sibling's ROOT .planning/. A --ws allocation must instead scan the sibling's
+// copy of the SAME workstream: workstream numbering is independent of the root
+// roadmap (Workstream Namespacing REQ-WS-01 — workstream state is isolated in
+// .planning/workstreams/{name}/), so a sibling's root-roadmap numbers must not
+// leak into a workstream allocation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('phase add --ws workstream-scoped allocation vs sibling git worktrees (#4225)', () => {
+  const activeWorktrees = [];
+  const activeDirs = [];
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS });
+  }
+
+  /**
+   * The #4225 topology: a committed ROOT roadmap with phases 1..rootMax (every
+   * linked worktree carries it), plus workstream `wsName` whose own roadmap and
+   * phases/ hold 1..wsMax.
+   */
+  function initWsRepo(repoDir, rootMax, wsName, wsMax) {
+    const rootLines = ['# Roadmap', '', '## Milestone v1.0', ''];
+    for (let i = 1; i <= rootMax; i++) {
+      rootLines.push(`### Phase ${i}: root phase ${i}`, '', '**Goal:** root goal', '');
+    }
+    fs.mkdirSync(path.join(repoDir, '.planning', 'phases'), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, '.planning', 'ROADMAP.md'), rootLines.join('\n') + '\n');
+
+    const wsBase = path.join(repoDir, '.planning', 'workstreams', wsName);
+    const wsLines = ['# Workstream Roadmap', '', '## Milestone v1.0', ''];
+    for (let i = 1; i <= wsMax; i++) {
+      wsLines.push(`### Phase ${i}: ws phase ${i}`, '', '**Goal:** ws goal', '');
+    }
+    fs.mkdirSync(path.join(wsBase, 'phases'), { recursive: true });
+    if (wsMax > 0) {
+      fs.mkdirSync(path.join(wsBase, 'phases', String(wsMax).padStart(2, '0') + '-ws-phase-' + wsMax));
+    }
+    fs.writeFileSync(path.join(wsBase, 'ROADMAP.md'), wsLines.join('\n') + '\n');
+
+    git(['init', '-b', 'main'], repoDir);
+    git(['config', 'user.email', 'test@example.com'], repoDir);
+    git(['config', 'user.name', 'Test'], repoDir);
+    git(['add', '-A'], repoDir);
+    git(['commit', '-m', 'init'], repoDir);
+    return wsBase;
+  }
+
+  /** A sibling linked worktree checked out at HEAD (carries the committed root roadmap). */
+  function addSiblingAtHead(repoDir) {
+    const sha = git(['rev-parse', 'HEAD'], repoDir).trim();
+    const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-sib-'));
+    git(['worktree', 'add', '--detach', worktreeDir, sha], repoDir);
+    activeWorktrees.push({ repoDir, worktreeDir });
+    return worktreeDir;
+  }
+
+  function teardown() {
+    while (activeWorktrees.length) {
+      const { repoDir, worktreeDir } = activeWorktrees.pop();
+      try {
+        git(['worktree', 'remove', '--force', worktreeDir], repoDir);
+      } catch (_) { /* best-effort; cleanup() below still removes the directory */ }
+      cleanup(worktreeDir);
+    }
+    while (activeDirs.length) cleanup(activeDirs.pop());
+  }
+
+  afterEach(teardown);
+
+  test('phase add --ws numbers from the workstream, not the sibling root roadmaps (issue verbatim)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-main-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'New workstream feature', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      '#4225: the workstream\'s own next number (max 2 + 1), not the root roadmap\'s 39 + 1'
+    );
+    assert.strictEqual(output.padded, '03');
+    assert.strictEqual(
+      output.directory,
+      '.planning/workstreams/ws-alpha/phases/03-new-workstream-feature',
+      'directory must land inside the workstream with the workstream-scoped number'
+    );
+
+    const wsRoadmap = fs.readFileSync(
+      path.join(repoDir, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md'),
+      'utf-8'
+    );
+    assert.ok(wsRoadmap.includes('### Phase 3: New workstream feature'), 'ws roadmap entry must be Phase 3');
+    assert.ok(wsRoadmap.includes('**Depends on:** Phase 2'), 'dependency must reference the in-workstream predecessor');
+
+    // The root roadmap and root phases/ are a different numbering universe — untouched.
+    const rootRoadmap = fs.readFileSync(path.join(repoDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    assert.ok(!rootRoadmap.includes('New workstream feature'), 'root roadmap must not gain the workstream phase');
+    assert.ok(
+      !fs.readdirSync(path.join(repoDir, '.planning', 'phases')).some((e) => e.startsWith('40-')),
+      'root phases/ must not gain a 40- directory'
+    );
+  });
+
+  test('phase add --ws still skips a number held by the SAME workstream in a sibling', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-same-ws-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ws-alpha copy holds Phase 3 (a branch that already minted it).
+    const sibWsPhases = path.join(sibling, '.planning', 'workstreams', 'ws-alpha', 'phases');
+    fs.mkdirSync(path.join(sibWsPhases, '03-sibling-only'), { recursive: true });
+    const sibWsRoadmap = path.join(sibling, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md');
+    fs.appendFileSync(sibWsRoadmap, '\n### Phase 3: sibling-only phase\n\n**Goal:** taken\n');
+
+    const result = runGsdTools(['query', 'phase.add', 'Contended', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      4,
+      '#4225 keeps the #3849 widening: a number taken by the same workstream on another branch is still taken — but the sibling root roadmap\'s 39 must not decide it'
+    );
+  });
+
+  test('phase add --ws numbers the FIRST phase of an empty workstream as 1', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-empty-ws-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-empty', 0);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'First steps', '--ws', 'ws-empty'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 1, 'an empty workstream starts at 1, not root-max+1 (40)');
+    assert.strictEqual(output.padded, '01');
+    assert.ok(
+      fs.existsSync(path.join(repoDir, '.planning', 'workstreams', 'ws-empty', 'phases', '01-first-steps')),
+      'directory should be 01-first-steps inside the workstream'
+    );
+  });
+
+  test('phase add --ws at the root maximum is coincidentally equal, with an in-workstream dependency', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-ws39-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 39);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.add', 'Fortieth in workstream', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, 40, 'the workstream\'s own 39+1 — correct for its own reason');
+    const wsRoadmap = fs.readFileSync(
+      path.join(repoDir, '.planning', 'workstreams', 'ws-alpha', 'ROADMAP.md'),
+      'utf-8'
+    );
+    assert.ok(
+      wsRoadmap.includes('**Depends on:** Phase 39'),
+      'Phase 39 dependency is legitimate here: it exists in THIS workstream'
+    );
+  });
+
+  test('a sibling holding only ANOTHER workstream\'s numbers does not affect --ws allocation', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-beta-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ws-beta (a different, independent numbering universe) is at 50.
+    const betaPhases = path.join(sibling, '.planning', 'workstreams', 'ws-beta', 'phases');
+    fs.mkdirSync(path.join(betaPhases, '50-beta-heavy'), { recursive: true });
+    const betaRoadmap = path.join(sibling, '.planning', 'workstreams', 'ws-beta', 'ROADMAP.md');
+    fs.mkdirSync(path.dirname(betaRoadmap), { recursive: true });
+    fs.writeFileSync(betaRoadmap, ['# Workstream Roadmap', '', '### Phase 50: beta heavy', '', '**Goal:** beta', ''].join('\n') + '\n');
+
+    const result = runGsdTools(['query', 'phase.add', 'Alpha next', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      'cross-workstream numbers (root 39 in the sibling root roadmap, ws-beta 50) are different universes — ws-alpha numbers from its own 2+1'
+    );
+  });
+
+  test('a sibling without the workstream directory contributes nothing (fail open)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-no-ws-sib-'));
+    activeDirs.push(repoDir);
+    const wsBase = initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling predates the workstream: its checkout has no ws-alpha at all.
+    // eslint-disable-next-line local/no-raw-rmsync-in-tests -- fixture SETUP, not teardown: strips the sibling's workstreams/ so it lacks the active scope; teardown() owns the dir's removal
+    fs.rmSync(path.join(sibling, '.planning', 'workstreams'), { recursive: true, force: true });
+
+    const result = runGsdTools(['query', 'phase.add', 'Local only', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      3,
+      'a missing workstream scope in a sibling contributes nothing — local ws sources decide'
+    );
+    assert.ok(fs.existsSync(path.join(wsBase, 'phases', '03-local-only')));
+  });
+
+  test('phase add-batch --ws numbers sequentially from the workstream, not the root roadmap', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-batch-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(
+      ['query', 'phase.add-batch', '--descriptions', '["Batch A","Batch B"]', '--ws', 'ws-alpha'],
+      repoDir
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phases[0].phase_number, 3, '#4225: the batch allocator shares the scoped horizon');
+    assert.strictEqual(output.phases[1].phase_number, 4);
+  });
+
+  test('without --ws, allocation keeps the #3849 global sibling horizon byte-for-byte', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-flat-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 440, 'ws-alpha', 2);
+    const sibling = addSiblingAtHead(repoDir);
+
+    // The sibling's ROOT roadmap holds Phase 441 (#3849's shape).
+    fs.appendFileSync(
+      path.join(sibling, '.planning', 'ROADMAP.md'),
+      '\n### Phase 441: sibling root phase\n\n**Goal:** taken\n'
+    );
+
+    const result = runGsdTools(['query', 'phase.add', 'Flat allocation'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      442,
+      'no --ws: the sibling ROOT roadmap still widens the horizon exactly as #3849 shipped'
+    );
+  });
+
+  test('phase next-decimal --ws is unaffected (planningDir-scoped already)', () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4225-dec-'));
+    activeDirs.push(repoDir);
+    initWsRepo(repoDir, 39, 'ws-alpha', 2);
+    addSiblingAtHead(repoDir);
+
+    const result = runGsdTools(['query', 'phase.next-decimal', '2', '--ws', 'ws-alpha'], repoDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.next, '02.1', 'next-decimal was never sibling-widened; the fix must not change it');
   });
 });
 
@@ -2938,6 +3240,119 @@ describe('phase insert command', () => {
 
     const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
     assert.ok(roadmap.includes('Phase 05.1: Hotfix (INSERTED)'), 'roadmap should include inserted phase');
+  });
+
+  // #4569: cmdPhaseInsert's decimal allocation must count an existing decimal
+  // regardless of WHICH of the three representations (on-disk directory,
+  // `### Phase N.M:` heading, `- [ ] Phase N.M:` checklist bullet) carries it —
+  // via the shared scanExistingDecimalPhaseNumbers helper.
+  test('#4569 core regression: does not reallocate a decimal that exists only as a roadmap checklist bullet', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+
+- [ ] Phase 3.1: Something
+`
+    );
+
+    const result = runGsdTools('phase insert 3 New Thing', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, '03.2', 'checklist-only 3.1 must not be reallocated as 03.1');
+    assert.ok(
+      fs.existsSync(path.join(tmpDir, '.planning', 'phases', '03.2-new-thing')),
+      'new decimal phase directory should be 03.2, not a collision with the checklist-only 03.1'
+    );
+  });
+
+  test('#4569 independence check: a decimal present in heading, checklist, and on-disk directory simultaneously is counted once', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+
+### Phase 3.1: Existing Decimal
+**Goal:** Test
+
+- [ ] Phase 3.1: Existing Decimal
+`
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03.1-existing-decimal'), { recursive: true });
+
+    const result = runGsdTools('phase insert 3 New Thing', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      '03.2',
+      'triple-represented 03.1 must count once, not skip ahead or collide'
+    );
+  });
+
+  test('#4569 negative-space: a checklist bullet for an unrelated phase family does not pollute this phase\'s decimal allocation', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+
+### Phase 13: Unrelated
+**Goal:** Unrelated
+
+- [ ] Phase 13.2: Unrelated Decimal
+`
+    );
+
+    const result = runGsdTools('phase insert 3 New Thing', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(
+      output.phase_number,
+      '03.1',
+      'phase 13\'s checklist decimal must not cross-pollute phase 3\'s allocation'
+    );
+  });
+
+  test('#4569: --sibling flag inserts a sibling of a decimal phase via the real CLI', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+
+### Phase 3.2: Existing Decimal
+**Goal:** Test
+`
+    );
+    const result = runGsdTools('phase insert 3.2 New Thing --sibling', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, '03.3', 'sibling allocation must join phase 3\'s level, not nest under 3.2');
+  });
+
+  test('#4569: --sibling flag falls back to nested allocation when afterPhase has no decimal segment', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 3: Something
+**Goal:** Setup
+`
+    );
+    const result = runGsdTools('phase insert 3 New --sibling', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_number, '03.1', '--sibling on a top-level phase must fall back to nested allocation');
   });
 });
 
@@ -6167,7 +6582,7 @@ function runPhaseComplete(tmpDir, { phase = '1', tolerateExit = false } = {}) {
   try {
     return execFileSync('node', [GSD_TOOLS_BIN, 'phase', 'complete', phase], {
       cwd: tmpDir,
-      timeout: 60000,
+      timeout: LOOP_HOOK_POINT_CLI_TIMEOUT_MS,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -7377,6 +7792,167 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
         hasPhase6,
         `STATE.md must reference Phase 6 as current after completing Phase 5. body Phase line: ${phaseLine}, frontmatter current_phase: ${fm.current_phase}`,
       );
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // #4129 row 1: `phase complete N` failed to increment completed_phases when
+  // a SIBLING completed phase's verification routes `stale` (its SUMMARY was
+  // touched after the verification — the issue's real-world drift). The
+  // transaction flips this phase's ROADMAP row and derives the BODY counters
+  // from the post-completion ROADMAP, but the frontmatter disk scan reads the
+  // PRE-completion ROADMAP and the stale-dated sibling, so the persisted
+  // counter stays pinned at the under-count. See .gsd/bug/
+  // fix-4129-completed-phases-recompute/{10-diagnosis,50-test-matrix}.md.
+  // ─────────────────────────────────────────────────────────────────────────
+  describe('#4129: phase complete increments completed_phases to the ROADMAP truth', () => {
+    let tmpDir;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-4129-phase-'));
+    });
+
+    afterEach(() => {
+      cleanup(tmpDir);
+    });
+
+    // Body Progress percent through the repo's own field extractor (never raw
+    // substring matching on rendered STATE.md — CONTRIBUTING.md prohibits it).
+    function bodyProgressPercentFromState(stateContent) {
+      const raw = stateExtractField(stateContent, 'Progress');
+      if (raw === null) return null;
+      const match = raw.match(/(\d{1,3})%/);
+      return match ? Number(match[1]) : null;
+    }
+
+    function setupStaleSiblingProject(tmpDir) {
+      const planningDir = path.join(tmpDir, '.planning');
+      const phasesDir = path.join(planningDir, 'phases');
+      fs.mkdirSync(phasesDir, { recursive: true });
+      fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'REPRO' }));
+
+      const roadmapLines = [
+        '# Roadmap',
+        '',
+        '## Current Milestone: v1.0',
+        '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 1.    | 2/2            | Complete | 2026-01-01 |',
+        '| 2.    | 2/2            | Complete | 2026-01-02 |',
+        '| 3.    | 2/2            | In Progress |  |',
+      ];
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`| ${i}.    | 0/2            | Not Started |  |`);
+      roadmapLines.push('', '- [x] Phase 1: Alpha (completed 2026-01-01)', '- [x] Phase 2: Beta (completed 2026-01-02)', '- [ ] Phase 3: Gamma');
+      for (let i = 4; i <= 18; i += 1) roadmapLines.push(`- [ ] Phase ${i}: P${i}`);
+      for (let i = 1; i <= 18; i += 1) {
+        roadmapLines.push('', `### Phase ${i}: P${i}`, '', '**Goal:** goal', '**Plans:** 2 plans', '');
+      }
+      fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+
+      fs.writeFileSync(
+        path.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'milestone: v1.0',
+          'milestone_name: Programme',
+          'status: executing',
+          'current_phase: 3',
+          'last_updated: 2026-01-02T10:00:00.000Z',
+          'progress:',
+          '  total_phases: 18',
+          '  completed_phases: 2',
+          '  total_plans: 4',
+          '  completed_plans: 4',
+          '  percent: 11',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Phase: 3 of 18 (Gamma) — EXECUTING',
+          'Plan: 2 of 2',
+          'Status: Executing Phase 3',
+          'Last activity: 2026-01-02',
+          '',
+          '## Progress',
+          '',
+          'Progress: [█░░░░░░░░░] 11% (2/18 phases complete)',
+          '',
+          '## Session Continuity',
+          '',
+          'Last session: 2026-01-02T10:00:00.000Z',
+          '',
+        ].join('\n'),
+      );
+
+      for (const p of [1, 2, 3]) {
+        const pp = String(p).padStart(2, '0');
+        const dir = path.join(phasesDir, `${pp}-p${p}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const i of [1, 2]) {
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-PLAN.md`), '# Plan\n');
+          fs.writeFileSync(path.join(dir, `${pp}-0${i}-SUMMARY.md`), '# Summary\n');
+        }
+        fs.writeFileSync(
+          path.join(dir, `${pp}-VERIFICATION.md`),
+          ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+        );
+      }
+
+      // The drift: phase 1's summary touched after its verification. No git
+      // repo → the #2348 clock compares mtimes; the newer summary mtime
+      // routes phase 1's verification `stale` (verified via
+      // `verification status` in the diagnosis repro).
+      const older = new Date('2026-01-01T00:00:00Z');
+      const newer = new Date('2026-03-01T00:00:00Z');
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-VERIFICATION.md'), older, older);
+      fs.utimesSync(path.join(phasesDir, '01-p1', '01-01-SUMMARY.md'), newer, newer);
+
+      return { planningDir };
+    }
+
+    test('phaseCompleteIncrementsCompletedPhasesPastStaleSibling', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r.success, `phase complete 3 failed: ${r.error}`);
+
+      const state = fs.readFileSync(statePath, 'utf8');
+      const fm = extractFrontmatter(state);
+      assert.ok(fm.progress, 'progress block must exist after phase complete');
+      assert.equal(
+        Number(fm.progress.completed_phases),
+        3,
+        `#4129: completing phase 3 must increment completed_phases to the ROADMAP truth 3 (phases 1-3 Complete), got ${fm.progress.completed_phases}`,
+      );
+      assert.equal(
+        Number(fm.progress.percent),
+        17,
+        `#4129: percent must follow the incremented counter (3/18), got ${fm.progress.percent}`,
+      );
+      // The body bar must stay coherent with the persisted percent (#4129 AC7).
+      assert.equal(bodyProgressPercentFromState(state), 17, 'the body Progress bar must carry the same 17% as the frontmatter percent');
+      // The ROADMAP row this very transaction flipped is the authority.
+      const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf8');
+      assert.ok(/^- \[x\] Phase 3: Gamma/m.test(roadmap), 'precondition: the transaction flipped the phase 3 ROADMAP checkbox');
+      assert.ok(/^\| 3\.\s*\|\s*2\/2\s*\|\s*Complete\s*\|/m.test(roadmap), 'precondition: the transaction flipped the phase 3 table row');
+    });
+
+    test('phaseCompleteIsIdempotentOnTheRoadmapTruth', () => {
+      setupStaleSiblingProject(tmpDir);
+      const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+
+      const r1 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r1.success, `first call failed: ${r1.error}`);
+      const r2 = runSdkQuery(['phase.complete', '3'], tmpDir);
+      assert.ok(r2.success, `second call failed: ${r2.error}`);
+
+      const fm = extractFrontmatter(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(Number(fm.progress.completed_phases), 3, '#4129: double-complete stays at the ROADMAP truth 3 (idempotent)');
     });
   });
 
@@ -8808,7 +9384,7 @@ function run(args, cwd) {
     return {
       stdout: execFileSync('node', [gsdTools, ...args], {
         cwd,
-        timeout: 15000,
+        timeout: PROBE_TIMEOUT_MS,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       }),
@@ -9178,7 +9754,7 @@ function run2853(args, cwd) {
   try {
     return {
       stdout: execFileSync('node', [gsdTools2853, ...args], {
-        cwd, timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+        cwd, timeout: PROBE_TIMEOUT_MS, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
       }),
       ok: true,
     };

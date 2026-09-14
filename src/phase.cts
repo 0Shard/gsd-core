@@ -55,10 +55,19 @@ const {
 import { escapeRegex } from './pattern.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection, findMilestoneScopeHeadingLines } = roadmapParserMod;
+// #4129: the single owner of "count the ROADMAP's milestone Complete rows"
+// (pure computation, no I/O — no cycle on this path) for the intent-first
+// progress counters the phase-complete transaction passes downstream.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-lifecycle.cjs is an export= CommonJS module
+import phaseLifecycleMod = require('./phase-lifecycle.cjs');
+const { deriveProgressFromRoadmap: deriveProgressFromRoadmapForIntent, clampPercent: clampPercentForIntent } = phaseLifecycleMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -332,28 +341,25 @@ function cmdPhaseNextDecimal(cwd: string, basePhase: string, raw: boolean): void
       const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
       baseExists = matchPhaseDirs(dirs, normalized).matches.length > 0;
-
-      const dirPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(normalized)}\\.(\\d+)`);
-      for (const dir of dirs) {
-        const match = dir.match(dirPattern);
-        if (match) decimalSet.add(parseInt(match[1], 10));
-      }
     }
 
     const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
     if (fs.existsSync(roadmapPath)) {
       try {
         const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-        const phasePattern = new RegExp(
-          `#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(normalized)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
-          'gi',
-        );
-        let pm: RegExpExecArray | null;
-        while ((pm = phasePattern.exec(roadmapContent)) !== null) {
-          decimalSet.add(parseInt(pm[1], 10));
+        for (const n of scanExistingDecimalPhaseNumbers(phasesDir, roadmapContent, normalized)) {
+          decimalSet.add(n);
         }
       } catch {
-        /* ROADMAP.md read failure is non-fatal */
+        // ROADMAP.md read failure is non-fatal — fall back to the directory-only
+        // scan (empty rawContent) so on-disk decimal directories are still counted.
+        for (const n of scanExistingDecimalPhaseNumbers(phasesDir, '', normalized)) {
+          decimalSet.add(n);
+        }
+      }
+    } else {
+      for (const n of scanExistingDecimalPhaseNumbers(phasesDir, '', normalized)) {
+        decimalSet.add(n);
       }
     }
 
@@ -1229,12 +1235,24 @@ function assertDescriptionPreservesMilestoneScope(cwd: string, description: stri
  * before any directory does; milestone-scoping is wrong here because a number
  * used under any milestone on another branch is still taken).
  *
+ * #4225 — the horizon must track the ALLOCATION scope. When the allocation is
+ * workstream-scoped (`--ws`/`GSD_WORKSTREAM`, resolved into the env before
+ * dispatch), the sibling's copy of the SAME workstream is what carries that
+ * scope's independent numbering; the sibling's ROOT roadmap and phases/
+ * belong to a different numbering universe (docs/FEATURES.md §51 REQ-WS-01 —
+ * workstream state is isolated in `.planning/workstreams/{name}/`) and must
+ * not contribute. `planningDir(wt, ws)` reuses the canonical resolver, so the
+ * sibling scope matches the local scope's own resolution (env workstream plus
+ * env project segment) by construction; `ws === null` (no workstream active)
+ * keeps the #3849 root-scope horizon byte-for-byte.
+ *
  * Widen, never refuse: a missing `.planning/`, an unreadable sibling, a
  * non-git cwd, or an unavailable git binary each leave `used` untouched —
  * allocation then behaves exactly as it did before this horizon existed.
- * Sentinels reuse the canonical `isSentinelPhaseId`; the dir pattern is the
- * same one the on-disk scan uses, so decimal sub-phases (`411.1-foo`) are
- * correctly not integers.
+ * A sibling that simply lacks the active workstream's directory is the same
+ * fail-open case: it contributes nothing. Sentinels reuse the canonical
+ * `isSentinelPhaseId`; the dir pattern is the same one the on-disk scan uses,
+ * so decimal sub-phases (`411.1-foo`) are correctly not integers.
  */
 function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
   let porcelain: string;
@@ -1251,6 +1269,13 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
   } catch {
     return; // not a git repo / git unavailable — unchanged behavior
   }
+  // #4225: the env workstream, read once with planningDir's own discriminator
+  // (`?? null` = deliberately no workstream — never re-derived per sibling).
+  // A poisoned value would already have thrown at the local `planningDir(cwd)`
+  // call every allocator makes before reaching this horizon; the per-sibling
+  // try/catch below still keeps any resolution failure fail-open.
+  const ws = process.env['GSD_WORKSTREAM'] ?? null;
+  const siblingPlanningDir = (wt: string): string => planningDir(wt, ws);
   const dirNumPattern = /^(?:[A-Z][A-Z0-9]*-)?(\d+)-/;
   // Same header shape the allocators scan locally (#1729 tag tolerance).
   const headerPattern = /#{2,4}\s*Phase\s+(\d+)[A-Z]?(?:\.\d+)*(?:\s*\([^)\n]{0,200}\))?:/gi;
@@ -1259,17 +1284,17 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
     const wt = line.slice('worktree '.length).trim();
     if (!wt || path.resolve(wt) === path.resolve(cwd)) continue;
     try {
-      for (const entry of fs.readdirSync(path.join(wt, '.planning', 'phases'))) {
+      for (const entry of fs.readdirSync(path.join(siblingPlanningDir(wt), 'phases'))) {
         const match = entry.match(dirNumPattern);
         if (!match) continue;
         const num = parseInt(match[1], 10);
         if (!isSentinelPhaseId(num)) used.add(num);
       }
     } catch {
-      /* worktree has no .planning — normal, contributes nothing */
+      /* worktree has no .planning (or no copy of this scope) — normal, contributes nothing */
     }
     try {
-      const content = fs.readFileSync(path.join(wt, '.planning', 'ROADMAP.md'), 'utf-8');
+      const content = fs.readFileSync(path.join(siblingPlanningDir(wt), 'ROADMAP.md'), 'utf-8');
       let m: RegExpExecArray | null;
       headerPattern.lastIndex = 0;
       while ((m = headerPattern.exec(content)) !== null) {
@@ -1277,7 +1302,7 @@ function collectSiblingWorktreePhaseNums(cwd: string, used: Set<number>): void {
         if (!isSentinelPhaseId(num)) used.add(num);
       }
     } catch {
-      /* no roadmap in that worktree — normal, contributes nothing */
+      /* no roadmap in that worktree (or scope) — normal, contributes nothing */
     }
   }
 }
@@ -1520,7 +1545,79 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
   publishStateContract(cwd);
 }
 
-function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, raw: boolean): void {
+// #4569: scans all three representations of an existing decimal sub-phase
+// under `base` — on-disk `phases/` directories, `### Phase BASE.N:` headings,
+// and `- [ ] Phase BASE.N:` roadmap SUMMARY CHECKLIST bullets. A bullet-only
+// roadmap with no heading yet and no on-disk directory yet must still be
+// seen, or an allocator can silently reallocate an already-used decimal
+// number. Shared by `cmdPhaseInsert`'s normalized-base scan and its
+// sibling-allocation parent-base scan so the two never drift apart.
+function scanExistingDecimalPhaseNumbers(phasesDir: string, rawContent: string, base: string): Set<number> {
+  const decimalSet = new Set<number>();
+
+  // #2245 audit: existsSync-guarded, mirroring cmdPhaseNextDecimal's identical
+  // scan above — a missing phasesDir (no decimal sub-phases yet) is the
+  // expected, silent case (empty decimalSet). A readdirSync failure once the
+  // dir is confirmed to EXIST is a genuine anomaly; swallowing it used to let
+  // `phase insert` proceed with an incomplete decimalSet and risk writing a
+  // decimal phase number that collides with an existing on-disk directory
+  // the scan simply never saw — surfaced loud instead, like the sibling.
+  //
+  // #4634 (lint-phase-enumeration-drift): routed through the canonical
+  // PHYSICAL-set owner (`listAllPhaseDirs`, phase-locator.cts) instead of a
+  // hand-rolled `readdirSync`. This scan — like its sibling `cmdPhaseNextDecimal`
+  // and its caller `cmdPhaseInsert` (both exempted in the drift guard for the
+  // same reason) — must see EVERY on-disk decimal sub-phase directory
+  // regardless of the current milestone window, so `listMilestonePhaseDirs`
+  // (windowed) is the wrong owner here; `includeSentinels: true` preserves this
+  // function's pre-existing behavior of never sentinel-filtering (the decimal
+  // regex below only ever matches `base.N`-shaped names, so sentinel inclusion
+  // is a no-op either way).
+  if (fs.existsSync(phasesDir)) {
+    const { value: dirs, scope } = listAllPhaseDirs(phasesDir, { includeSentinels: true });
+    if (scope === SCOPE.UNREADABLE) {
+      // The dir EXISTS but could not be read (EACCES/EIO) — a genuine anomaly,
+      // not the expected empty-decimalSet case above. Surfaced loud, matching
+      // this function's pre-migration `readdirSync` catch: swallowing it would
+      // let `phase insert` proceed with an incomplete decimalSet and collide
+      // with an existing on-disk decimal directory the scan never saw.
+      error(`Failed to scan phase directories for existing decimal phases: unable to read ${phasesDir}`);
+    }
+    const decimalPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(base)}\\.(\\d+)`);
+    for (const dir of dirs) {
+      const dm = dir.match(decimalPattern);
+      if (dm) decimalSet.add(parseInt(dm[1], 10));
+    }
+  }
+
+  const rmPhasePattern = new RegExp(
+    `#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(base)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
+    'gi',
+  );
+  let rmMatch: RegExpExecArray | null;
+  while ((rmMatch = rmPhasePattern.exec(rawContent)) !== null) {
+    decimalSet.add(parseInt(rmMatch[1], 10));
+  }
+
+  const checklistDecimalPattern = new RegExp(
+    `-\\s*\\[[ x]\\]\\s*(?:\\*\\*)?Phase\\s+${phaseMarkdownRegexSource(base)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`,
+    'gi',
+  );
+  let clMatch: RegExpExecArray | null;
+  while ((clMatch = checklistDecimalPattern.exec(rawContent)) !== null) {
+    decimalSet.add(parseInt(clMatch[1], 10));
+  }
+
+  return decimalSet;
+}
+
+function cmdPhaseInsert(
+  cwd: string,
+  afterPhase: string,
+  description: string,
+  raw: boolean,
+  allocation: 'nested' | 'sibling' = 'nested',
+): void {
   if (!afterPhase || !description) {
     error('after-phase and description required for phase insert');
   }
@@ -1565,49 +1662,22 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
 
     const phasesDir = path.join(planningDir(cwd), 'phases');
     const normalizedBase = normalizePhaseName(afterPhase);
-    const decimalSet = new Set<number>();
-
-    // #2245 audit: existsSync-guarded, mirroring cmdPhaseNextDecimal's identical
-    // scan above — a missing phasesDir (no decimal sub-phases yet) is the
-    // expected, silent case (empty decimalSet). A readdirSync failure once the
-    // dir is confirmed to EXIST is a genuine anomaly; swallowing it used to let
-    // `phase insert` proceed with an incomplete decimalSet and risk writing a
-    // decimal phase number that collides with an existing on-disk directory
-    // the scan simply never saw — surfaced loud instead, like the sibling.
-    if (fs.existsSync(phasesDir)) {
-      // Initialized (not just declared) so TS's definite-assignment check is
-      // satisfied without relying on control-flow narrowing through error()'s
-      // `never` return, which TS does not propagate through a destructured
-      // module-property function reference — error() still halts the process
-      // before `dirs` below is ever computed from this placeholder value.
-      let entries: fs.Dirent[] = [];
-      try {
-        entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        error(`Failed to scan phase directories for existing decimal phases: ${msg}`);
-      }
-      const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      const decimalPattern = new RegExp(
-        `^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(normalizedBase)}\\.(\\d+)`,
-      );
-      for (const dir of dirs) {
-        const dm = dir.match(decimalPattern);
-        if (dm) decimalSet.add(parseInt(dm[1], 10));
-      }
-    }
-
-    const rmPhasePattern = new RegExp(
-      `#{2,4}\\s*Phase\\s+${phaseMarkdownRegexSource(normalizedBase)}\\.(\\d+)${OPTIONAL_PHASE_TAG_SOURCE}\\s*:`,
-      'gi',
-    );
-    let rmMatch: RegExpExecArray | null;
-    while ((rmMatch = rmPhasePattern.exec(rawContent)) !== null) {
-      decimalSet.add(parseInt(rmMatch[1], 10));
-    }
+    const decimalSet = scanExistingDecimalPhaseNumbers(phasesDir, rawContent, normalizedBase);
 
     const nextDecimal = decimalSet.size === 0 ? 1 : Math.max(...decimalSet) + 1;
-    const _decimalPhase = `${normalizedBase}.${nextDecimal}`;
+    let _decimalPhase = `${normalizedBase}.${nextDecimal}`;
+
+    // #4569: sibling allocation joins afterPhase's PARENT level instead of nesting
+    // one level deeper under afterPhase itself. A top-level phase (no existing
+    // decimal segment) has no sibling level to join; nested is the only sensible
+    // allocation, so we silently fall back for that case.
+    const lastDotIndex = normalizedBase.lastIndexOf('.');
+    if (allocation === 'sibling' && lastDotIndex !== -1) {
+      const parentBase = normalizedBase.slice(0, lastDotIndex);
+      const siblingDecimalSet = scanExistingDecimalPhaseNumbers(phasesDir, rawContent, parentBase);
+      const siblingNextDecimal = siblingDecimalSet.size === 0 ? 1 : Math.max(...siblingDecimalSet) + 1;
+      _decimalPhase = `${parentBase}.${siblingNextDecimal}`;
+    }
     const insertConfig = loadConfig(cwd);
     const projectCode = (insertConfig.project_code as string) || '';
     const pfx = projectCode ? `${projectCode}-` : '';
@@ -3570,7 +3640,10 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     // #2617: pass the project's runtime so the blocked-completion error below
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
-    const verificationStatus = readVerificationStatus(phaseFullDir, { runtime: resolveRuntime(cwd) });
+    const verificationStatus = readVerificationStatus(phaseFullDir, {
+      runtime: resolveRuntime(cwd),
+      convention: resolvePhaseIdConvention(cwd),
+    });
     // #3057 B3: the staleness check inside readVerificationStatus can itself
     // fail (fs / scanPhasePlans / clock error), in which case `status` above
     // was routed as if nothing were stale (unchanged fail-open routing) — but
@@ -4395,14 +4468,57 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         const bodyHasPhaseField =
           stateExtractField(fmBody, 'Current Phase') != null ||
           stateExtractField(fmBody, 'Phase') != null;
-        const authoritativeFm: Record<string, string> | undefined = nextPhaseDisplayName
-          ? bodyHasPhaseField || !nextPhaseNum
-            ? { current_phase_name: nextPhaseDisplayName }
-            : {
-                current_phase: String(nextPhaseNum),
-                current_phase_name: nextPhaseDisplayName,
-              }
-          : undefined;
+        // #4129: the POST-completion progress counters, derived from the very
+        // ROADMAP this transaction just mutated (still in memory — it hits disk
+        // only at writePlanningFileSet, AFTER this content was assembled).
+        // buildStateFrontmatter's disk scan inside syncAndPreserveStateMd
+        // reads the PRE-completion ROADMAP (and any stale-dated sibling
+        // verification), so without this intent the persisted counter failed
+        // to increment on the completing phase's own transaction. Routed
+        // through the #2736 authoritativeFm seam's object direction: the
+        // pre-preservation merge makes it the derived truth the ratchet
+        // compares, and the post-preservation re-assert (completedOnlyRaise)
+        // is a floor no preservation branch can drop below. clampPercent is
+        // completePhaseCore's own percent formula (state-transition.cts),
+        // reused so the frontmatter and the body `Progress:` line agree.
+        const postCompletionRoadmapScope = roadmapContent !== null
+          ? extractCurrentMilestone(roadmapContent, cwd)
+          : null;
+        const postCompletionRoadmapProgress = postCompletionRoadmapScope !== null
+          ? deriveProgressFromRoadmapForIntent(postCompletionRoadmapScope)
+          : null;
+        const authoritativeProgress: Record<string, number> | undefined =
+          postCompletionRoadmapProgress && postCompletionRoadmapProgress.completedPhases !== null
+            ? postCompletionRoadmapProgress.totalPhases !== null && postCompletionRoadmapProgress.totalPhases > 0
+              ? {
+                  completed_phases: postCompletionRoadmapProgress.completedPhases,
+                  percent: clampPercentForIntent(
+                    postCompletionRoadmapProgress.completedPhases,
+                    postCompletionRoadmapProgress.totalPhases,
+                  ),
+                }
+              : { completed_phases: postCompletionRoadmapProgress.completedPhases }
+            : undefined;
+        const authoritativeFm: Record<string, unknown> | undefined = authoritativeProgress
+          ? {
+              ...(nextPhaseDisplayName
+                ? bodyHasPhaseField || !nextPhaseNum
+                  ? { current_phase_name: nextPhaseDisplayName }
+                  : {
+                      current_phase: String(nextPhaseNum),
+                      current_phase_name: nextPhaseDisplayName,
+                    }
+                : {}),
+              progress: authoritativeProgress,
+            }
+          : nextPhaseDisplayName
+            ? bodyHasPhaseField || !nextPhaseNum
+              ? { current_phase_name: nextPhaseDisplayName }
+              : {
+                  current_phase: String(nextPhaseNum),
+                  current_phase_name: nextPhaseDisplayName,
+                }
+            : undefined;
         // ADR-3408 §8.3 / #3469: this deliberately bypasses
         // readModifyWriteStateMd (STATE.md is committed atomically with
         // ROADMAP/REQUIREMENTS), so it calls the single write-seam

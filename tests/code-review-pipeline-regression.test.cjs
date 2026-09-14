@@ -26,16 +26,54 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { toLegacyResult, gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS, GIT_TIMEOUT_MS, HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
+const {
+  foldShellContinuations,
+  findShellFencedMatches,
+} = require('./helpers/shell-doc-scan.cjs');
+
+/**
+ * A single invocation of the external `fallow` binary's `audit`
+ * subcommand against the REAL current repo tree (CI-only) -- a heavier
+ * third-party tool operation distinct from any existing shared constant.
+ */
+const FALLOW_AUDIT_TIMEOUT_MS = 120000;
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md');
 const PRE_PASS_STEP_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review', 'steps', 'structural-pre-pass.md');
 const FIXER_PATH = path.join(ROOT, 'agents', 'gsd-code-fixer.md');
 const REVIEWER_PATH = path.join(ROOT, 'agents', 'gsd-code-reviewer.md');
+
+// ---------------------------------------------------------------------------
+// #4259: the T6 docs-parity site scan, hoisted out of the assertion so it can
+// be driven directly by the negative controls below.
+//
+// The scan is `$`-anchored with `[^\n]*` on both sides of `--grep=`, so it only
+// ever matched when `git log` and `--grep=` sat on the SAME physical line. A
+// shell line-continuation made a semantically identical derivation invisible:
+// zero hits, and T6 passed. Both generations of the assertion were defeated by
+// it — the current anti-revert ban let a wrapped site through outright, and at
+// v1.12.0 a wrapped site was silently exempted from the pattern-conformance
+// checks written to catch the macOS `\b`-no-op class, so it could have carried
+// exactly the malformed pattern T6 exists to reject. That is not a hypothetical
+// shape: wrapping is the natural way to write a `git log` carrying a long ERE,
+// and a real candidate implementation for #3926 did it, passed T6, and was
+// caught only by later manual review.
+//
+// Folding continuations BEFORE matching is the repair, rather than widening the
+// regex in place: the assertion's message and its `PHASE_SCOPE_NUM` filter both
+// assume one site is one string, and a `[\s\S]*?` would happily run the scan
+// across unrelated statements. The fold corrects the input, so everything built
+// on the scan is fixed at once.
+//
+const GREP_SITE_RE = /^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm;
+
+const findGrepSites = (src) => findShellFencedMatches(src, GREP_SITE_RE);
 
 // ---------------------------------------------------------------------------
 // Pure-function implementation of the compute_file_scope Node script body.
@@ -766,12 +804,15 @@ function extractTier3Derivation() {
   return fence.slice(0, cut);
 }
 
-// spawn_reviewer's whole DIFF_BASE fence.
+// spawn_reviewer no longer derives its own DIFF_BASE (#4209 B3 fix: a second,
+// divergent recomputation there made the external reviewer lane and the
+// internal reviewer diff against different base SHAs on any re-review). It
+// now reuses the value compute_file_scope's Tier-3 derivation already
+// computed, so this is the SAME snippet as extractTier3Derivation() — kept
+// as a distinct name so T2/T5 below still read as testing spawn_reviewer's
+// contract, not just Tier 3's.
 function extractSpawnReviewerDerivation() {
-  const src = readFileNormalized(WORKFLOW_PATH);
-  const spawnIdx = src.indexOf('<step name="spawn_reviewer">');
-  assert.ok(spawnIdx !== -1, 'code-review.md must have a spawn_reviewer step');
-  return fenceContaining(src, 'PHASE_START=$(git log', spawnIdx);
+  return extractTier3Derivation();
 }
 
 // The fallow phase-scope derivation, from the step fragment. The fragment
@@ -1032,7 +1073,7 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
           const audit = execTool(
             requireFallowBinary({ cwd: ROOT, envPath: '' }),
             ['audit', '--changed-since', fallowBase[0], '--format', 'json'],
-            { cwd: repo, timeout: 120000 },
+            { cwd: repo, timeout: FALLOW_AUDIT_TIMEOUT_MS },
           );
           assert.ok([0, 1].includes(audit.exitCode), `fallow root audit exit=${audit.exitCode}; stderr=${audit.stderr}`);
           console.log(`fallow-root-audit normal-exit=${audit.exitCode}`);
@@ -1073,6 +1114,135 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
   // both files must use the SAME phase-directory anchor — and no message-grep
   // derivation may return (a subject carries no milestone bound; that class
   // failed five times: #2989/#3191/#3503/#3995).
+  // #4259: the T6 scan drives itself off the live workflow files, which are
+  // clean — so its matching branch is exercised only by whatever those files
+  // happen to contain, and the hole it had was invisible for exactly that
+  // reason. These fixtures drive findGrepSites directly, in both directions.
+  test('#4259 T6 site scan sees a backslash-continued derivation, and still ignores what it should', () => {
+    const sameLine = [
+      '```bash',
+      'PHASE_START=$(git log --extended-regexp --grep="^(feat|fix)\\(phase-${PHASE_SCOPE_NUM}" --format="%H")',
+      '```',
+    ].join('\n');
+
+    // Semantically identical to the row above. The only difference is two
+    // continued physical lines, and that used to be enough to vanish.
+    const continued = [
+      '```bash',
+      'PHASE_START=$(git log \\',
+      '  --extended-regexp \\',
+      '  --grep="^(feat|fix)\\(phase-${PHASE_SCOPE_NUM}" --format="%H")',
+      '```',
+    ].join('\n');
+
+    assert.equal(findGrepSites(sameLine).length, 1, 'the same-line form must stay caught');
+    assert.equal(findGrepSites(continued).length, 1, 'the continued form must now be caught (#4259)');
+
+    // The filter T6 actually asserts on has to see the marker too. Before the
+    // fold this failed twice over: the scan returned nothing, AND
+    // PHASE_SCOPE_NUM sat on a different physical line from the one the scan
+    // would have captured, so even a matching scan would have filtered it out.
+    for (const src of [sameLine, continued]) {
+      assert.equal(
+        findGrepSites(src).filter((l) => l.includes('PHASE_SCOPE_NUM')).length,
+        1,
+        'the captured site must carry the marker T6 filters on',
+      );
+    }
+
+    // Negative control that DOES exercise the fold: a continued, non-phase
+    // grep site remains a site, but must not become a phase-scope finding.
+    const benign = [
+      '```bash',
+      'RELEASE_NOTES=$(git log \\',
+      '  --grep="^chore" --format="%s")',
+      '```',
+    ].join('\n');
+    assert.equal(
+      findGrepSites(benign).filter((l) => l.includes('PHASE_SCOPE_NUM') || /phase-\)?\(/.test(l)).length,
+      0,
+      'a non-phase-scope --grep must stay clean',
+    );
+
+    // A wrapped git-log assignment that merely sits near a --grep string must
+    // not be glued into one logical line with it. This exercises the fold and
+    // still contains every keyword the site regex looks for.
+    const unrelated = [
+      '```bash',
+      'SOME_VAR=$(git log \\',
+      '  --format="%H")',
+      'echo "--grep=$SOME_VAR"',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(findGrepSites(unrelated), [], 'a wrapped unrelated assignment must not glue into a hit');
+
+    // A continuation must not reach across a blank line — the reason this
+    // folds [ \t]* rather than \s* after the newline.
+    const acrossBlank = [
+      '```bash',
+      'SOME_VAR=$(git log \\',
+      '',
+      'FOO=--grep=x',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(findGrepSites(acrossBlank), [], 'the fold must stop at a blank line');
+
+    // Two trailing backslashes represent one literal backslash followed by a
+    // real newline. Folding this would invent a site the shell does not have.
+    const evenBackslashes = [
+      '```bash',
+      'PHASE_START=$(git log \\\\',
+      '  --grep="phase-${PHASE_SCOPE_NUM}")',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(
+      findGrepSites(evenBackslashes),
+      [],
+      'an even trailing-backslash run is not a shell continuation',
+    );
+
+    // Three trailing backslashes retain one literal pair while the final
+    // backslash continues the command. This pins the non-trivial odd boundary.
+    const oddBackslashes = [
+      '```bash',
+      `PHASE_START=$(git log ${'\\'.repeat(3)}`,
+      '  --grep="phase-${PHASE_SCOPE_NUM}")',
+      '```',
+    ].join('\n');
+    assert.deepStrictEqual(
+      findGrepSites(oddBackslashes),
+      [`PHASE_START=$(git log ${'\\'.repeat(2)} --grep="phase-\${PHASE_SCOPE_NUM}")`],
+      'an odd trailing-backslash run keeps its literal pairs and continues the line',
+    );
+  });
+
+  test('#4259 continuation folding preserves every odd/even backslash-run boundary', () => {
+    fc.assert(fc.property(
+      fc.integer({ min: 0, max: 31 }),
+      fc.array(fc.constantFrom(' ', '\t'), { maxLength: 8 }).map((chars) => chars.join('')),
+      (runLength, indentation) => {
+        const slashes = '\\'.repeat(runLength);
+        const source = `cmd ${slashes}\n${indentation}tail`;
+        const expected = runLength % 2 === 1
+          ? `cmd ${'\\'.repeat(runLength - 1)} tail`
+          : source;
+        assert.strictEqual(foldShellContinuations(source), expected);
+      },
+    ), { numRuns: 200 });
+  });
+
+  test('#4259 T6 site scan reports nothing on the live workflow files', () => {
+    // The adoption check: only shell code fences are scanned, so markdown hard
+    // breaks and examples in other languages cannot be folded into fake shell
+    // sites. Distinct from T6 itself, this asserts the live scan is quiet.
+    for (const src of [
+      readFileNormalized(WORKFLOW_PATH),
+      readFileNormalized(PRE_PASS_STEP_PATH).replace(/\\"/g, '"'),
+    ]) {
+      assert.deepStrictEqual(findGrepSites(src), []);
+    }
+  });
+
   test('T6 docs-parity: all diff-base derivations use the identical phase-directory anchor; no --grep site remains', () => {
     const sources = [
       readFileNormalized(WORKFLOW_PATH),
@@ -1086,9 +1256,9 @@ describe('Bug 5 (#3191) — same anchored, portable phase-scope grep at all thre
     }
     const grepSites = [];
     for (const src of sources) {
-      for (const m of src.matchAll(/^\s*[A-Z_]+=\$\(git log[^\n]*--grep=[^\n]*$/gm)) {
-        grepSites.push(m[0]);
-      }
+      // #4259: findGrepSites folds backslash continuations first, so a wrapped
+      // assignment presents as one logical line and cannot slip the scan.
+      grepSites.push(...findGrepSites(src));
     }
     assert.deepStrictEqual(
       grepSites.filter((l) => l.includes('PHASE_SCOPE_NUM') || /phase-\)?\(/.test(l)),
@@ -1253,4 +1423,83 @@ describe('Bug 6 (#3503/#3995) — diff base keys on the phase directory, not com
       }
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// #4209 Phase 1 Plan 3 (Task 2) — external reviewer evidence consolidation.
+// gsd-code-reviewer.md must treat <external_reviewer_evidence> as untrusted
+// input: independently re-verify every claim against the actual current
+// source before it can appear in REVIEW.md, fold a verified claim into the
+// SAME Narrative Findings section (no second schema), and never let text
+// embedded inside an evidence file act as an instruction. code-review.md's
+// EXTERNAL_EVIDENCE_BLOCK must keep restating the four fixed prohibitions.
+// ---------------------------------------------------------------------------
+describe('CONS-01..03 — external reviewer evidence consolidation (#4209)', () => {
+  function loadStep(src, stepName) {
+    const stepStart = src.indexOf(`<step name="${stepName}">`);
+    assert.ok(stepStart !== -1, `agent must have a ${stepName} step`);
+    const stepEnd = src.indexOf('</step>', stepStart);
+    return src.slice(stepStart, stepEnd);
+  }
+
+  test('load_context parses <external_reviewer_evidence> and marks it untrusted', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(stepSection.includes('external_reviewer_evidence'),
+      'load_context must parse the external_reviewer_evidence block');
+    assert.ok(/untrusted/i.test(stepSection),
+      'load_context must explicitly mark external reviewer evidence as untrusted data');
+  });
+
+  test('load_context requires independent re-verification against actual source before accepting a claim', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/re-open|reopen/i.test(stepSection) && /re-read/i.test(stepSection),
+      'load_context must require re-opening and re-reading the actual cited source before accepting an external claim');
+    assert.ok(/REJECTED|reject/i.test(stepSection),
+      'load_context must state that an unverifiable external claim is rejected, not included');
+  });
+
+  test('load_context resists prompt injection embedded inside evidence text', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/prompt-injection|prompt injection/i.test(stepSection),
+      'load_context must name prompt injection as a threat from evidence content');
+    assert.ok(/never a command|not a command/i.test(stepSection),
+      'load_context must state evidence text is data, never a command');
+  });
+
+  test('a verified external claim folds into Narrative Findings with no separate schema (CONS-03)', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const stepSection = loadStep(src, 'load_context');
+    assert.ok(/Narrative Findings/.test(stepSection),
+      'load_context must route a verified external claim into the existing Narrative Findings section');
+    const writeReviewSection = loadStep(src, 'write_review');
+    assert.ok(/external:/.test(writeReviewSection),
+      'write_review must document the (external: {slug}) provenance tag for a verified external finding');
+    assert.ok(!/## External/i.test(writeReviewSection),
+      'write_review must not introduce a separate External Findings section — one REVIEW.md schema only');
+  });
+
+  test('critical_rules restates the untrusted-evidence contract', () => {
+    const src = fs.readFileSync(REVIEWER_PATH, 'utf8');
+    const rulesStart = src.indexOf('<critical_rules>');
+    const rulesEnd = src.indexOf('</critical_rules>');
+    assert.ok(rulesStart !== -1 && rulesEnd !== -1, 'gsd-code-reviewer.md must have a critical_rules section');
+    const rulesSection = src.slice(rulesStart, rulesEnd);
+    assert.ok(/external_reviewer_evidence|external reviewer/i.test(rulesSection),
+      'critical_rules must restate the external-evidence-is-untrusted contract');
+  });
+
+  test('code-review.md restates the four fixed source-review prohibitions when handing off evidence', () => {
+    const workflowSrc = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const blockStart = workflowSrc.indexOf('EXTERNAL_EVIDENCE_BLOCK=$(printf');
+    assert.ok(blockStart !== -1, 'code-review.md must build an EXTERNAL_EVIDENCE_BLOCK');
+    const blockEnd = workflowSrc.indexOf('\n', workflowSrc.indexOf(')', blockStart));
+    const blockText = workflowSrc.slice(blockStart, blockEnd);
+    for (const prohibition of ['no source mutation', 'no test execution', 'no background processes', 'no active polling']) {
+      assert.ok(blockText.includes(prohibition),
+        `EXTERNAL_EVIDENCE_BLOCK must restate "${prohibition}" (SAFE-03..06)`);
+    }
+  });
 });

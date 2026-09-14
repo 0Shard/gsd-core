@@ -436,7 +436,7 @@ const GSD_CHANGESET_FILES = [
   'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
   'README.md', // documentation only — not user-authored
 ];
-const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs', 'alias-drift-families.cjs', 'exit-code-registry.cjs', 'ndjson-reporter.cjs', 'ci-job-timing.cjs', 'shellcheck-fetch.cjs'];
+const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs', 'alias-drift-families.cjs', 'exit-code-registry.cjs', 'ndjson-reporter.cjs', 'ci-job-timing.cjs', 'shellcheck-fetch.cjs', 'npm-version-check-diagnosis.cjs', 'platform-conformance-tier.generated.cjs', 'suite-detection.cjs', 'macos-conformance-tier.generated.cjs'];
 
 /**
  * Resolve a runtime's shared-hooks directory name from its descriptor.
@@ -544,6 +544,13 @@ const {
   RUNTIME_PROFILE_MAP: GSD_RUNTIME_PROFILE_MAP,
   isAnthropicFlavoredModel: gsdIsAnthropicFlavoredModel,
 } = require(path.join(_gsdLibDir, 'model-catalog.cjs'));
+// #4145: shared hash-first recovery for gsd-pristine/ baselines stored at an
+// unexpected path (e.g. without the gsd-core/ prefix an earlier release's
+// writer dropped). Same module the reapply verifier uses, so the two readers
+// cannot drift apart again.
+const {
+  findPristineByHash: gsdFindPristineByHash,
+} = require(path.join(_gsdLibDir, 'pristine-baseline.cjs'));
 // #2875 Part 2: MODEL_PROFILES + resolveTierEntry are now consumed only by
 // install-model-override-resolver.cjs's readGsdRuntimeProfileResolver
 // (required below) — this installer no longer needs its own bindings.
@@ -1285,6 +1292,7 @@ const removeKimiHooksToml = hooksSurface.removeKimiHooksToml;
 // callers continue to work and there is a single implementation. (All call
 // sites are below this line, so the const binding has no TDZ hazard.)
 const processAttribution = runtimeArtifactConversion.processAttribution;
+const filterRuntimeNotesForTarget = runtimeArtifactConversion.filterRuntimeNotesForTarget;
 // computePathPrefix: implementation lives in runtimeArtifactConversion
 // (ADR-1508 / #1511 Phase 2 — single owner). Re-bound here so install.js call
 // sites continue to work. #2876 retired the sibling
@@ -1362,34 +1370,13 @@ function ensureCodexHooksJsonSessionStart(targetDir, opts = {}) {
 }
 
 /**
- * Ensure hooks.json contains exactly one managed GSD hook entry for the given
- * Codex event, wired to gsd-context-monitor.js. Preserves user-owned entries.
- *
- * Used for the new Codex events added in #772:
- *   SubagentStart — inject context / GSD_AGENT_NAME awareness at subagent open
- *   Stop          — post-session context headroom tracking
- *   PostToolUse   — mirror the Claude Code PostToolUse context monitor
- *
- * All three events are routed through gsd-context-monitor.js — the same hook
- * used for PostToolUse in the Claude Code baseline — so context-headroom
- * warnings surface at these key Codex session lifecycle moments.
- *
- * On Windows (#3426): writes a gsd-context-monitor.cmd shim alongside the .js
- * file and uses the .cmd path as the hook command — exactly the same fix as
- * SessionStart uses for gsd-check-update — to avoid the bash.exe POSIX-exec
- * failure when Codex's hook dispatcher tries to run node.exe through Git Bash.
- *
- * @param {string} targetDir
- * @param {string} eventName - One of 'SubagentStart', 'Stop', 'PostToolUse'.
- * @param {{ absoluteRunner: string|null, platform?: NodeJS.Platform }} opts
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function ensureCodexHooksJsonEvent(targetDir, eventName, opts = {}) {
-  return hooksSurface.ensureCodexHooksJsonEvent(targetDir, eventName, opts);
-}
-
-/**
- * Remove a GSD-managed event entry from hooks.json. Called during uninstall.
+ * Remove a GSD-managed event entry from hooks.json. Called during uninstall,
+ * and (#2586) unconditionally during install/reinstall to clean up a
+ * pre-#2586 install's stale gsd-context-monitor.js registrations — GSD no
+ * longer ADDS entries for these events (see CODEX_HOOKS_TO_COPY /
+ * cleanupOrphanedCodexContextMonitorScript in bin/install.js's Codex branch),
+ * only removes recognized ones, so the `ensureCodexHooksJsonEvent` wrapper
+ * that used to add them was removed as dead code.
  *
  * @param {string} targetDir
  * @param {string} eventName
@@ -2429,7 +2416,7 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
  * @param {boolean} [isGlobal=false] - Whether this is a global install
  */
 function convertClaudeToAntigravityContent(content, isGlobal = false) {
-  let c = content;
+  let c = filterRuntimeNotesForTarget(content, 'antigravity');
   if (isGlobal) {
     // #3738: global skills install under ~/.gemini/config/skills (the dir AGY
     // scans for global discovery), so skills-path references must divert there
@@ -2565,7 +2552,7 @@ function convertSlashCommandsToCursorSkillMentions(content) {
 }
 
 function convertClaudeToCursorMarkdown(content) {
-  let converted = convertSlashCommandsToCursorSkillMentions(content);
+  let converted = convertSlashCommandsToCursorSkillMentions(filterRuntimeNotesForTarget(content, 'cursor'));
   // Replace tool name references in body text
   converted = converted.replace(/\bBash\(/g, 'Shell(');
   converted = converted.replace(/\bEdit\(/g, 'StrReplace(');
@@ -2686,7 +2673,7 @@ function convertSlashCommandsToTraeSkillMentions(content) {
 }
 
 function convertClaudeToTraeMarkdown(content) {
-  let converted = convertSlashCommandsToTraeSkillMentions(content);
+  let converted = convertSlashCommandsToTraeSkillMentions(filterRuntimeNotesForTarget(content, 'trae'));
   converted = converted.replace(/\bBash\(/g, 'Shell(');
   converted = converted.replace(/\bEdit\(/g, 'StrReplace(');
   // Replace general-purpose subagent type with Trae's equivalent "general_purpose_task"
@@ -2812,7 +2799,7 @@ function convertSlashCommandsToCodebuddySkillMentions(content) {
 }
 
 function convertClaudeToCodebuddyMarkdown(content) {
-  let converted = convertSlashCommandsToCodebuddySkillMentions(content);
+  let converted = convertSlashCommandsToCodebuddySkillMentions(filterRuntimeNotesForTarget(content, 'codebuddy'));
   // CodeBuddy uses the same tool names as Claude Code (Bash, Edit, Read, Write, etc.)
   // No tool name conversion needed
   converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
@@ -2904,7 +2891,7 @@ function convertClaudeAgentToCodebuddyAgent(content) {
 // ── Cline converters ────────────────────────────────────────────────────────
 
 function convertClaudeToCliineMarkdown(content) {
-  let converted = content;
+  let converted = filterRuntimeNotesForTarget(content, 'cline');
   // Cline uses the same tool names as Claude Code — no tool name conversion needed
   converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.clinerules`');
   converted = converted.replace(/\.\/CLAUDE\.md/g, '.clinerules');
@@ -3827,7 +3814,7 @@ function rewriteBareGsdToolsCommandsForCodex(content) {
 }
 
 function convertClaudeToCodexMarkdown(content) {
-  let converted = convertSlashCommandsToCodexSkillMentions(content);
+  let converted = convertSlashCommandsToCodexSkillMentions(filterRuntimeNotesForTarget(content, 'codex'));
   converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
   // Remove /clear references — Codex has no equivalent command
   // Handle backtick-wrapped: `\/clear` then: → (removed)
@@ -7208,7 +7195,7 @@ function neutralizeAgentReferences(content, instructionFile) {
 
 function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOverride = null } = {}) {
   // Replace tool name references in content (applies to all files)
-  let convertedContent = content;
+  let convertedContent = filterRuntimeNotesForTarget(content, 'opencode');
   convertedContent = convertedContent.replace(/\bAskUserQuestion\b/g, 'question');
   convertedContent = convertedContent.replace(/\bSlashCommand\b/g, 'skill');
   convertedContent = convertedContent.replace(/\bTodoWrite\b/g, 'todowrite');
@@ -7370,7 +7357,7 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
 // tests/runtime-converters.test.cjs (#2093).
 function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverride = null } = {}) {
   // Replace tool name references in content (applies to all files)
-  let convertedContent = content;
+  let convertedContent = filterRuntimeNotesForTarget(content, 'kilo');
   convertedContent = convertedContent.replace(/\bAskUserQuestion\b/g, 'question');
   convertedContent = convertedContent.replace(/\bSlashCommand\b/g, 'skill');
   convertedContent = convertedContent.replace(/\bTodoWrite\b/g, 'todowrite');
@@ -7923,6 +7910,8 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       if (shouldCompose(srcPath)) {
         content = composeWorkflow(content, { sourcePath: srcPath });
       }
+
+      content = filterRuntimeNotesForTarget(content, runtime);
 
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;
@@ -8477,6 +8466,16 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         removedCount++;
         console.log(`  ${green}✓${reset} Removed managed Codex ${eventName} hook from hooks.json`);
       }
+    }
+    // #2586: uninstall's own symmetric half of the orphaned-script cleanup —
+    // same GSD-owned + unreferenced gate as the install-time call.
+    const uninstallMonitorCleanup = hooksSurface.cleanupOrphanedCodexContextMonitorScript(targetDir);
+    for (const deletedPath of uninstallMonitorCleanup.deleted) {
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed orphaned Codex hook script (${path.basename(deletedPath)})`);
+    }
+    for (const warning of uninstallMonitorCleanup.warnings) {
+      console.warn(`  ${yellow}⚠${reset}  Could not remove orphaned Codex hook script ${warning.path}: ${warning.reason}`);
     }
   }
 
@@ -10154,6 +10153,86 @@ function populatePristineDir({ packageSrc, pristineDir, modified, runtime, pathP
 }
 
 /**
+ * #4145: recover a pristine baseline from a hash-matching orphan stored at an
+ * unexpected path under gsd-pristine/ (e.g. without the gsd-core/ prefix an
+ * earlier release's writer dropped).
+ *
+ * The preserve-check's strict join (pristineDir + manifest-keyed relPath)
+ * misses such snapshots, so they were pushed into regeneration from the
+ * incoming release — and when the file changed upstream, the candidate's hash
+ * could never satisfy the recorded outgoing hash, leaving the correct
+ * baseline permanently unconsumed and unpruned (the self-perpetuating state
+ * #4145 reports). Hash equality with pristine_hashes is the same authority
+ * the #3657 drift guard trusts, so an exact match cannot be the wrong
+ * baseline no matter where under gsd-pristine/ it lives.
+ *
+ * Recovery = relocation: copy the orphan to the canonical manifest-keyed path
+ * (hash-verified after the copy) and remove the orphan only once the
+ * canonical copy is verified in place. Returns true when the canonical path
+ * ended up holding recorded-hash bytes. Never deletes anything it cannot
+ * vouch for by hash, and never consumes a path that is the canonical path of
+ * ANY manifest file (see canonicalSkip below) — only genuine orphans, which
+ * no strict-join reader ever consults, are eligible for removal.
+ */
+function recoverOrphanedPristine(pristineDir, relPath, recordedHash, canonicalSkip) {
+  if (!recordedHash) return false;
+  let orphanRel;
+  try {
+    // canonicalSkip = the normalized manifest keys: a file already sitting at
+    // any canonical path can never be (re-)adopted through the scan. Without
+    // this, two modified files sharing byte-identical outgoing content would
+    // repeatedly "rescue" each other's canonical away (relocate + delete at
+    // its home path) in alternating updates — bytes identical, state unstable.
+    // It also keeps drift (#3657) / stale (#3407) territory with the caller.
+    orphanRel = gsdFindPristineByHash(pristineDir, recordedHash, canonicalSkip);
+  } catch {
+    return false;
+  }
+  if (!orphanRel) return false;
+  const outRef = resolveInstallRelativePath(pristineDir, relPath);
+  if (!outRef) return false;
+  try {
+    fs.mkdirSync(path.dirname(outRef.fullPath), { recursive: true });
+    fs.copyFileSync(path.join(pristineDir, orphanRel), outRef.fullPath);
+    // Verify the relocated copy before removing the orphan — only a
+    // hash-matching canonical counts as recovered.
+    if (fileHash(outRef.fullPath) !== recordedHash) {
+      try { fs.rmSync(outRef.fullPath, { force: true }); } catch { /* best-effort */ }
+      return false;
+    }
+    // Orphan removal is best-effort: the canonical copy is already verified,
+    // so a failed unlink leaves a harmless duplicate, never data loss.
+    try { fs.rmSync(path.join(pristineDir, orphanRel), { force: true }); } catch { /* best-effort */ }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #4135: honest N-of-M accounting for gsd-pristine/ baselines after an
+ * update. The #3407 promotion rule keeps only hash-validated candidates
+ * (byte-identical across the version span), so a multi-version update
+ * legitimately ends with near-zero baselines — the collapse itself is NOT a
+ * bug to hide; hiding it is. This renders the covered-of-total line the
+ * update output prints either way, so "1 of 13" can never present like a
+ * fully-covered run. Pure function (typed return) so tests lock the exact
+ * contract without matching console prose.
+ */
+function describeBaselineCoverage(totalModified, covered) {
+  const total = Math.max(0, totalModified);
+  const have = Math.min(Math.max(0, covered), total);
+  const uncovered = total - have;
+  return {
+    complete: uncovered === 0,
+    uncovered,
+    text: uncovered === 0
+      ? `gsd-pristine/ baselines cover ${have} of ${total} modified file(s)`
+      : `gsd-pristine/ baselines cover ${have} of ${total} modified file(s) — ${uncovered} will be reported no_baseline by the reapply verifier`,
+  };
+}
+
+/**
  * Detect user-modified GSD files by comparing against install manifest.
  * Backs up modified files to gsd-local-patches/ for reapply after update.
  * Also saves pristine copies (from manifest) to gsd-pristine/ to enable
@@ -10299,6 +10378,15 @@ function saveLocalPatches(configDir, pristineCtx) {
       const stalePaths = new Set();
       // Track which relPaths were successfully regenerated (from either missing or stale).
       const regeneratedPaths = new Set();
+      // #4145: track which relPaths were recovered by relocating a hash-matching
+      // orphan (stored at an unexpected path, e.g. without the gsd-core/ prefix).
+      const rescuedPaths = new Set();
+      // #4145: the set of paths that are SOME file's canonical pristine path
+      // (every normalized manifest key). The orphan scan must never consume
+      // these — see recoverOrphanedPristine.
+      const canonicalSkip = new Set(
+        Object.keys(manifest.files || {}).map((k) => normalizeInstallRelativePath(k)).filter(Boolean),
+      );
       const missingPaths = [];
       for (const relPath of modified) {
         const outRef = resolveInstallRelativePath(pristineDir, relPath);
@@ -10319,6 +10407,17 @@ function saveLocalPatches(configDir, pristineCtx) {
           if (!fs.existsSync(pristinePath)) {
             stalePaths.add(relPath);
           }
+        }
+        // #4145: canonical absent (or just removed as stale) — before falling
+        // into regeneration, try to recover the baseline from a hash-matching
+        // orphan elsewhere under gsd-pristine/ and relocate it to the canonical
+        // path. This is the self-heal for snapshots an earlier release stored
+        // without the gsd-core/ prefix: without it the state repeats forever
+        // (regeneration candidates from the incoming release can never satisfy
+        // the recorded outgoing hash when upstream changed the file).
+        if (recoverOrphanedPristine(pristineDir, relPath, pristineHashes[relPath], canonicalSkip)) {
+          rescuedPaths.add(relPath);
+          continue;
         }
         // File absent from gsd-pristine/ (or just removed above as stale):
         // attempt hash-validated regeneration from new-release source.
@@ -10362,18 +10461,37 @@ function saveLocalPatches(configDir, pristineCtx) {
       }
       // `regenerated` = total files successfully regenerated (from missing OR stale).
       const regenerated = regeneratedPaths.size;
+      // `rescued` = files recovered by relocating a hash-matching orphan to its
+      // canonical path (#4145) — distinct from preservation (canonical already
+      // correct) and regeneration (bytes re-derived from new-release source).
+      const rescued = rescuedPaths.size;
       // `removed` = stale entries that were deleted and NOT subsequently regenerated.
       // Entries that were stale-deleted but then successfully regenerated are counted
-      // only in `regenerated` — the counts are non-overlapping.
-      const removed = [...stalePaths].filter(p => !regeneratedPaths.has(p)).length;
+      // only in `regenerated`; stale-deleted-then-orphan-rescued entries are counted
+      // only in `rescued` — the counts are non-overlapping.
+      const removed = [...stalePaths].filter(p => !regeneratedPaths.has(p) && !rescuedPaths.has(p)).length;
       if (preserved > 0) {
         console.log('  ' + green + '✓' + reset + '  Preserved ' + cyan + 'gsd-pristine/' + reset + ' (' + preserved + ' file(s)) for three-way merge');
+      }
+      if (rescued > 0) {
+        console.log('  ' + green + '✓' + reset + '  Recovered ' + cyan + 'gsd-pristine/' + reset + ' (' + rescued + ' file(s)) by recorded hash from a legacy-path snapshot and relocated them (#4145)');
       }
       if (regenerated > 0) {
         console.log('  ' + green + '✓' + reset + '  Regenerated ' + cyan + 'gsd-pristine/' + reset + ' (' + regenerated + ' file(s)) via hash-validated new-release source');
       }
       if (removed > 0) {
         console.log('  ' + yellow + 'i' + reset + '  Removed ' + removed + ' stale gsd-pristine/ snapshot(s); regenerated ' + regenerated + ' of those — falls back to over-broad verify heuristic for the rest');
+      }
+      // #4135: the honest N-of-M coverage line. Preserved/rescued/regenerated
+      // are disjoint buckets (see their accounting comments above), so their
+      // sum is exactly the files that ended this update with a hash-valid
+      // baseline. A partial result renders as an info line, not an error:
+      // the collapse is legitimate (#3407), hiding it was the bug.
+      const coverage = describeBaselineCoverage(modified.length, preserved + rescued + regenerated);
+      if (coverage.complete) {
+        console.log('  ' + green + '✓' + reset + '  ' + coverage.text);
+      } else {
+        console.log('  ' + yellow + 'i' + reset + '  ' + coverage.text);
       }
     }
   }
@@ -12197,11 +12315,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // stageTransitiveHookLibs call after the copy loop. The #3579 boundary is
     // preserved: helpers no staged Codex hook requires (graphify tooling among
     // them) are still not shipped.
+    // #2586: gsd-context-monitor.js is deliberately NOT copied for Codex.
+    // It reads the statusline bridge file (${TMPDIR}/claude-ctx-{session_id}.json)
+    // written only by hooks/gsd-statusline.js, which Codex never installs — so
+    // every registered event was a guaranteed silent no-op (readSentinel throws
+    // ENOENT -> allow(undefined), every invocation, every event, no exceptions).
+    // A pre-#2586 install's stale copy + hooks.json registrations are cleaned
+    // up below (see the CODEX_EXTENDED_HOOK_EVENTS loop), not re-added here.
     const CODEX_HOOKS_TO_COPY = [
       'gsd-check-update.js',
       'gsd-check-update-worker.js',
       'managed-hooks-registry.cjs',
-      'gsd-context-monitor.js',
     ];
     const codexHooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(codexHooksSrc)) {
@@ -12403,35 +12527,48 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           }
         }
 
-        // ── Codex extended hook events (#772, #2088) ─────────────────────────
-        // Codex CLI stabilised a full hook-event set in rust-v0.137.0. GSD
-        // registers CODEX_EXTENDED_HOOK_EVENTS (#2088 adds the 6 documented
-        // events beyond the original #772 three) — all routed through
-        // gsd-context-monitor.js so context-headroom warnings surface at each
-        // lifecycle point: SubagentStart/SubagentStop (subagent open/close),
-        // Stop (final-response), PreToolUse/PostToolUse (tool boundaries),
-        // PermissionRequest (approval prompts), Pre/PostCompact (context
-        // compaction), and UserPromptSubmit (per-turn context injection). The
-        // context-monitor script decides per-payload what to do; unregistered
-        // events simply never fire.
-        //
-        // Guard: only register when the context-monitor file exists and the node
-        // runner is available — same guards as the SessionStart path above.
-        const contextMonitorFile = path.join(targetDir, 'hooks', 'gsd-context-monitor.js');
-        if (codexNodeRunner && fs.existsSync(contextMonitorFile)) {
-          for (const codexEvent of CODEX_EXTENDED_HOOK_EVENTS) {
-            const eventWrite = ensureCodexHooksJsonEvent(targetDir, codexEvent, {
-              absoluteRunner: codexNodeRunner,
-              platform: process.platform,
-            });
-            if (eventWrite.wrote) {
-              console.log(`  ${green}✓${reset} Configured Codex hooks (${codexEvent} via hooks.json)`);
-            } else if (eventWrite.changed) {
-              console.log(`  ${green}✓${reset} Verified Codex hooks (${codexEvent} via hooks.json)`);
-            }
+        // #2586: Codex's hook payload carries no context/token-usage field
+        // (confirmed against codex-rs/hooks/src/schema.rs), so agent-facing
+        // context warnings and GSD phase/lifecycle display cannot be
+        // supported on this runtime — state that plainly during install
+        // rather than silently omitting the capability. Matches
+        // capabilities/codex/capability.json's hostBehaviors.unsupportedFeatures.
+        console.log(`  ${dim}↳${reset} Codex: agent-facing context warnings and GSD phase/lifecycle display are unsupported (Codex's hook payload has no context-usage metric)`);
+
+        // ── Codex extended hook events (#772, #2088) — REMOVED by #2586 ──────
+        // gsd-context-monitor.js is no longer copied or registered for Codex
+        // (see the CODEX_HOOKS_TO_COPY comment above): every one of these
+        // events was a guaranteed silent no-op, since the metrics bridge file
+        // it reads is only ever written by Claude's own statusline hook.
+        // Every event in CODEX_EXTENDED_HOOK_EVENTS is unconditionally
+        // reconciled here — not gated on the script existing — so a
+        // pre-#2586 install's stale registrations (exact current shape, or a
+        // recognized legacy shape via isManagedHookCommand's
+        // includeLegacyAliases) are stripped on reinstall. Mirrors the
+        // unconditional uninstall-time loop over the same constant. A
+        // registration whose command does not match the managed shape (a
+        // hand-customized entry) survives untouched — see
+        // reconcileCodexHooksJsonEvent's isManagedHookCommand filter.
+        for (const codexEvent of CODEX_EXTENDED_HOOK_EVENTS) {
+          const eventCleanup = removeCodexHooksJsonEvent(targetDir, codexEvent);
+          if (eventCleanup.changed) {
+            console.log(`  ${green}✓${reset} Removed stale Codex ${codexEvent} context-monitor hook from hooks.json`);
           }
-        } else if (!codexNodeRunner) {
-          console.warn(`  ${yellow}⚠${reset}  Skipped Codex extended hook-event registration — Node runner unavailable.`);
+        }
+        // Delete the orphaned script (+ Windows .cmd shim) left by a
+        // pre-#2586 install, but ONLY once no surviving hooks.json
+        // registration under any event still references it, and only when
+        // the on-disk file is GSD's own (see design doc's Ownership check —
+        // a content-signature check, not manifest membership, so this works
+        // on the very first reinstall after upgrading, with no bootstrap
+        // gap). A deletion failure never reverts the (already safe,
+        // already-written) hooks.json cleanup above — must-have #8.
+        const monitorCleanup = hooksSurface.cleanupOrphanedCodexContextMonitorScript(targetDir);
+        for (const deletedPath of monitorCleanup.deleted) {
+          console.log(`  ${green}✓${reset} Removed orphaned Codex hook script (${path.basename(deletedPath)})`);
+        }
+        for (const warning of monitorCleanup.warnings) {
+          console.warn(`  ${yellow}⚠${reset}  Could not remove orphaned Codex hook script ${warning.path}: ${warning.reason}`);
         }
         // ── end Codex extended hook events ────────────────────────────────────
       }
@@ -14117,6 +14254,7 @@ module.exports = {
     reportLocalPatches,
     validateHookFields,
     populatePristineDir,
+    describeBaselineCoverage,
     _resolveUserArtifactStagingRoot,
     _tryResolveUserArtifactStagingRoot,
     finishInstall,

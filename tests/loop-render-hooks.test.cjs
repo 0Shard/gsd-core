@@ -494,10 +494,55 @@ describe('#3661: code-review capability.json + generated registry (matrix Sectio
     assert.ok(wavePostStep, 'execute:wave:post.steps must contain a code-review step. Got: ' + JSON.stringify(wavePostSteps));
   });
 
+  test('F5: realRegistryProjectsSupportsReviewerLanesOnCodeReviewActiveHook', () => {
+    const result = resolveLoopHooks({ point: 'execute:post', registry: realRegistry, config: { workflow: { code_review: true } } });
+    const hook = result.activeHooks.find((h) => h.capId === 'code-review' && h.ref && h.ref.skill === 'code-review');
+    assert.ok(hook, 'Expected an active code-review hook at execute:post. Got: ' + JSON.stringify(result.activeHooks));
+    assert.strictEqual(hook.supportsReviewerLanes, true, 'Expected the real code-review active hook to carry supportsReviewerLanes: true');
+  });
+
   // F4-F7 (CLI-behavioral: gsd_run loop render-hooks / config-set through the real
   // subprocess, against a temp git project) live in tests/code-review.test.cjs's
   // 'CR-CONFIG: config key registration' describe block, alongside the sibling
   // workflow.code_review / workflow.code_review_depth CLI round-trip tests.
+
+});
+
+// ─── #4209 DISP-02: step.supportsReviewerLanes projection (provider-neutral) ──
+
+describe('#4209 DISP-02: step.supportsReviewerLanes projection (provider-neutral)', () => {
+  test('projects literal true onto the active hook for a synthetic non-code-review step', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' }, supportsReviewerLanes: true }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(hook.supportsReviewerLanes, true);
+  });
+
+  test('omitted supportsReviewerLanes is inert (field absent on active hook)', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' } }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(hook, 'supportsReviewerLanes'), false, 'Expected no supportsReviewerLanes key when omitted');
+  });
+
+  test('literal false is inert (field absent on active hook, not carried as false)', () => {
+    const registry = makeRegistry({
+      point: 'execute:post',
+      steps: [{ capId: 'synthetic-reviewer-cap', point: 'execute:post', ref: { skill: 'synthetic-skill' }, supportsReviewerLanes: false }],
+    });
+    const result = resolveLoopHooks({ point: 'execute:post', registry, config: {} });
+    const hook = result.activeHooks.find((h) => h.capId === 'synthetic-reviewer-cap');
+    assert.ok(hook, 'Expected the synthetic step to be active');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(hook, 'supportsReviewerLanes'), false, 'Expected no supportsReviewerLanes key when false');
+  });
 });
 
 // ─── 4. Ordering tests ────────────────────────────────────────────────────────
@@ -918,6 +963,7 @@ describe('renderLoopHooks', () => {
 // ─── 9. End-to-end cmdLoopRenderHooks (via gsd-tools subprocess) ─────────────
 
 const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -925,7 +971,7 @@ describe('cmdLoopRenderHooks end-to-end (via gsd-tools)', () => {
   test('loop render-hooks plan:pre returns JSON envelope with ui-phase step active', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'plan:pre', '--cwd', tmpProjectDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     const envelope = JSON.parse(result.stdout.trim());
@@ -942,7 +988,7 @@ describe('cmdLoopRenderHooks end-to-end (via gsd-tools)', () => {
   test('loop render-hooks plan:pre with no config.json → ui-phase step active by schema default', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'plan:pre', '--cwd', tmpEmptyProjectDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     const envelope = JSON.parse(result.stdout.trim());
@@ -966,7 +1012,7 @@ describe('cmdLoopRenderHooks end-to-end (via gsd-tools)', () => {
         '--config-dir',
         tmpUiDisabledConfigDir,
       ],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     const envelope = JSON.parse(result.stdout.trim());
@@ -982,7 +1028,7 @@ describe('cmdLoopRenderHooks end-to-end (via gsd-tools)', () => {
   test('loop render-hooks plan:pre with ui_phase=false in config.json → ui-phase step absent', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'plan:pre', '--cwd', tmpFalseConfigProjectDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     const envelope = JSON.parse(result.stdout.trim());
@@ -997,7 +1043,7 @@ describe('cmdLoopRenderHooks end-to-end (via gsd-tools)', () => {
   test('loop render-hooks invalid-point exits non-zero', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'plan:mid', '--cwd', tmpProjectDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.notStrictEqual(result.exitCode, 0, 'Expected non-zero exit for invalid point');
     assert.match(result.stderr, /plan:mid|Invalid loop point/);
@@ -1040,7 +1086,7 @@ describe('--active-cap flag (loop render-hooks)', () => {
   test('--active-cap tdd with tdd_mode=true → stdout trimmed === "true", exit 0', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'execute:post', '--active-cap', 'tdd', '--cwd', tddOnDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     assert.strictEqual(result.stdout.trim(), 'true', 'Expected stdout "true" when tdd_mode=true');
@@ -1049,7 +1095,7 @@ describe('--active-cap flag (loop render-hooks)', () => {
   test('--active-cap tdd with tdd_mode=false → stdout trimmed === "false", exit 0', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'execute:post', '--active-cap', 'tdd', '--cwd', tddOffDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     assert.strictEqual(result.stdout.trim(), 'false', 'Expected stdout "false" when tdd_mode=false');
@@ -1058,7 +1104,7 @@ describe('--active-cap flag (loop render-hooks)', () => {
   test('--active-cap <nonexistent-cap> → stdout trimmed === "false", exit 0', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'execute:post', '--active-cap', 'no-such-capability-xyz', '--cwd', tddOffDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0 for unknown capId. stderr: ' + (result.stderr || ''));
     assert.strictEqual(result.stdout.trim(), 'false', 'Expected stdout "false" for unknown capId');
@@ -1067,7 +1113,7 @@ describe('--active-cap flag (loop render-hooks)', () => {
   test('--active-cap with no value → non-zero exit and error message', () => {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'execute:post', '--active-cap', '--cwd', tddOffDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.notStrictEqual(result.exitCode, 0, 'Expected non-zero exit when --active-cap has no value');
     assert.match(result.stderr, /active-cap/i, 'Expected error message referencing --active-cap');
@@ -1077,7 +1123,7 @@ describe('--active-cap flag (loop render-hooks)', () => {
     // The entire stdout must be just "true" or "false" + newline — no envelope object
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', 'execute:post', '--active-cap', 'tdd', '--cwd', tddOnDir],
-      { cwd: ROOT, timeoutMs: 15000 },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.strictEqual(result.exitCode, 0, 'Expected exit 0. stderr: ' + (result.stderr || ''));
     // Must be exactly "true" or "false" — not a JSON object/envelope
@@ -1206,7 +1252,7 @@ describe('ADR-1244 D2: load-failed capability gates fail OPEN with a loud warnin
   function renderHooks(overlayHome, point, extraArgs = []) {
     const result = runNode(
       [GSD_TOOLS, 'loop', 'render-hooks', point, '--cwd', overlayHome, ...extraArgs],
-      { cwd: ROOT, timeoutMs: 15000, env: { ...process.env, GSD_HOME: overlayHome } },
+      { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS, env: { ...process.env, GSD_HOME: overlayHome } },
     );
     assert.strictEqual(result.exitCode, 0, `Expected exit 0 at ${point}. stderr: ` + (result.stderr || ''));
     return result;

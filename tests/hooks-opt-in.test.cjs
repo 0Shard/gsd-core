@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawn } = require('child_process');
 const { runHook } = require('./helpers/process-seam.cjs');
 const { HOOK_FANOUT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
@@ -1356,6 +1357,48 @@ EOF
     assert.strictEqual(runHookCmd(`git commit -m ${HD_OK}`).status, 0, 'non-vacuity: canonical form still resolves');
   });
 
+  test('subject extraction uses no pipe-to-head (SIGPIPE race, #4447 follow-on)', () => {
+    // `echo "$MSG" | head -1` (and the equivalent `printf ... | head -1` for
+    // the opt-in ENABLED flag) is a SIGPIPE race under `set -euo pipefail`:
+    // `head -1` can close its read end as soon as it has one line, and a real
+    // commit message/config output is multi-line, so `echo`/`printf` can die
+    // with signal 13 (exit 141) if its write lands after that close — which
+    // aborts the whole hook instead of the expected exit 2. This is a static,
+    // by-construction pin (not a timing repro, per this repo's policy against
+    // forcing scheduling races to reproduce deterministically): the fix
+    // (`${VAR%%$'\n'*}`, a pure parameter expansion with zero subprocesses and
+    // therefore zero pipe/race surface) must be present, and the vulnerable
+    // pipe pattern must be gone.
+    const hookSrc = fs.readFileSync(path.join(HOOKS_DIR, 'gsd-validate-commit.sh'), 'utf8');
+    // Regexes require the `$(...)` command-substitution wrapper so this only
+    // matches the actual dangerous CODE pattern, never the explanatory prose
+    // comments left at the fix site (which quote the bare pipeline, without
+    // the `$(...)` wrapper, for documentation purposes). `\s+`/`\s*` tolerate
+    // incidental reformatting (extra spaces, an appended `2>/dev/null`, etc.)
+    // so a cosmetically-reworded reintroduction of the SAME dangerous shape
+    // does not silently escape this check (review finding: an exact-string
+    // match would).
+    // Requires the `$(...)` command-substitution wrapper (real CODE, never
+    // the explanatory prose comments left at the fix site, which quote the
+    // bare "$MSG" | head -1 / "$CONFIG_OUT" | head -1 shape WITHOUT a `$(`
+    // in front — an earlier, unwrapped version of this same regex matched
+    // those comments and false-failed). Content between `$(` and `"$MSG"`/
+    // `"$CONFIG_OUT"` and between the quote and `head -1` is a tolerant
+    // `[^)]*`, so a cosmetically-reworded reintroduction of the SAME
+    // dangerous shape (extra spaces, an appended `2>/dev/null`, a different
+    // command before the pipe) does not silently escape this check — only
+    // the presence of a real `$( ... "$MSG" ... | head -1 ... )` /
+    // `$( ... "$CONFIG_OUT" ... | head -1 ... )` substitution matters.
+    assert.ok(!/\$\([^)]{0,200}"\$MSG"[^)]{0,200}\|\s*head\s+-1[^)]{0,200}\)/.test(hookSrc),
+      'no $(...) command substitution may pipe "$MSG" into head -1 (SIGPIPE race under set -o pipefail)');
+    assert.ok(!/\$\([^)]{0,200}"\$CONFIG_OUT"[^)]{0,200}\|\s*head\s+-1[^)]{0,200}\)/.test(hookSrc),
+      'no $(...) command substitution may pipe "$CONFIG_OUT" into head -1 (SIGPIPE race under set -o pipefail)');
+    assert.ok(hookSrc.includes('SUBJECT="${MSG%%$\'\\n\'*}"'),
+      'subject extraction must use the pure parameter-expansion form');
+    assert.ok(hookSrc.includes('ENABLED="${CONFIG_OUT%%$\'\\n\'*}"'),
+      'ENABLED extraction must use the pure parameter-expansion form');
+  });
+
   test('validate-commit does not trust a relative path ending in cat (round-4 Codex MAJOR)', () => {
     // Recognition accepted any path ending in `/cat`, so a planted `./cat` or
     // `../evil/cat` was trusted to echo its stdin. With such an executable
@@ -1674,3 +1717,115 @@ describe('hook security tests', { skip: isWindows ? 'bash hooks require unix she
     assert.strictEqual(result.status, 0, `Malformed config should be treated as disabled: ${result.status}`);
   });
 });
+
+
+// ─── #4492: a large `-m` message must not cost quadratic time ───────────────
+
+describe('validate-commit: a large -m message is validated in bounded time (#4492)',
+  { skip: isWindows ? 'bash hooks require unix shell' : false }, () => {
+    let tmpDir;
+    beforeEach(() => { tmpDir = createTempProject(); writeConfigWithHooks(tmpDir, true); });
+    afterEach(() => { cleanup(tmpDir); });
+
+    const HOOK = path.join(HOOKS_DIR, 'gsd-validate-commit.sh');
+
+    // Local, not in tests/helpers/timeouts.cjs: that module is for shared norms
+    // and says a call site with a differing bound keeps its own constant and
+    // justification. This is one regression's defect-detection threshold, not a
+    // norm. The quadratic `${CMD#*"$MSG_MATCH"}` this replaced costs 30.2s on
+    // the 112KB rows below while the indexed form costs 0.2s, so 10000ms sits
+    // 3x under the regressed cost and 50x over the fixed one.
+    const LARGE_MESSAGE_BOUND_MS = 10000;
+
+    // Async, bounded, and it reaps the whole process GROUP. Four constraints,
+    // each learned by measurement rather than reasoning:
+    //
+    //   1. `assert.ok(elapsed < BOUND)` is banned by `local/no-elapsed-assertion`.
+    //   2. `{ timeout }` on a SYNCHRONOUS body is inert — spawnSync blocks the
+    //      event loop so the runner's timer never fires. A draft of these rows
+    //      was sync with `{ timeout: 20000 }` and PASSED at 38.5s unfixed.
+    //   3. Killing only the direct child is not enough: the hook spawns a node
+    //      classifier that inherits stdout, so if IT stalls the pipe stays open
+    //      and `close` never arrives even after bash dies. Hence `detached` plus
+    //      a process-group kill.
+    //   4. Sizes must stay under Linux's MAX_ARG_STRLEN (131072 on a 4KB-page
+    //      kernel). Over it, execve fails, the classifier cannot launch, and the
+    //      hook fails open — the row then measures the argument limit instead of
+    //      the suffix scan.
+    //
+    // The bound is enforced by killing, which turns "too slow" into an ordinary
+    // observable (`status === null`, `signal === 'SIGKILL'`) a normal assertion
+    // reads.
+    const runCmdAsync = (command) => new Promise((resolve, reject) => {
+      const child = spawn('bash', [HOOK], { cwd: tmpDir, env: hookEnv, detached: true });
+      let stdout = '', stderr = '', settled = false;
+      const killer = setTimeout(() => {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+      }, LARGE_MESSAGE_BOUND_MS);
+      const settle = (fn, v) => { if (!settled) { settled = true; clearTimeout(killer); fn(v); } };
+      child.on('error', (err) => settle(reject, err));
+      child.stdin.on('error', () => { /* hook exited before reading stdin; `close` carries the verdict */ });
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('close', (status, signal) => settle(resolve, { status, stdout, stderr, signal }));
+      child.stdin.end(JSON.stringify({ tool_input: { command } }));
+    });
+
+    const bodyOf = (kb) => Array.from({ length: Math.ceil((kb * 1024) / 63) }, () => 'x'.repeat(62)).join('\n');
+    const heredocArg = (body) => `"$(cat <<'EOF'\n${body}\nEOF\n)"`;
+
+    // Every row asserts this. An empty stderr separates "the hook validated"
+    // from "the hook fell over and failed open" — the same status to a caller.
+    const assertValidated = (r, what) => {
+      assert.notStrictEqual(r.signal, 'SIGKILL',
+        `${what}: hook was killed at the ${LARGE_MESSAGE_BOUND_MS}ms bound — the quadratic ` +
+        'suffix scan is back (unfixed cost on this row is ~30s)');
+      assert.strictEqual(r.stderr, '',
+        `${what}: hook wrote to stderr, so it degraded instead of validating: ${r.stderr.slice(0, 200)}`);
+    };
+
+    // Deliberately a NON-conforming subject on the heredoc path. That keeps the
+    // row on RESOLVE=1, where the subject comes from the node resolver rather
+    // than the `... | head -1` fallback — so this pins the suffix scan ALONE and
+    // does not depend on the separate #4429 SIGPIPE fix. (An earlier draft used
+    // a trailing `--cleanup=verbatim`, which sets RESOLVE=0 and made the row
+    // fail with 141 until #4429 was also fixed; that coupling was a property of
+    // the fixture, not of the fix.)
+    test('a 112KB message is blocked on its subject, not stalled by the scan', async () => {
+      const r = await runCmdAsync(`git commit --allow-empty -m ${heredocArg(`WIP invalid\n${bodyOf(112)}`)}`);
+      assertValidated(r, '112KB non-conforming');
+      assert.strictEqual(r.status, 2,
+        `a non-conforming subject must still be refused no matter how long the body is; got ${r.status}`);
+    });
+
+    test('a 112KB conforming message is allowed, not stalled by the scan', async () => {
+      const r = await runCmdAsync(`git commit --allow-empty -m ${heredocArg(`feat: ${'x'.repeat(66)}\n${bodyOf(112)}`)}`);
+      assertValidated(r, '112KB conforming');
+      assert.strictEqual(r.status, 0,
+        `a conforming subject stays conforming no matter how long the body is; got ${r.status}`);
+    });
+
+    // The correctness half: the row that would catch an off-by-one in the index
+    // arithmetic that replaced the pattern match. The padding sits BEFORE the
+    // heredoc opener's newline, so the command is large while the MESSAGE stays
+    // tiny — which keeps this off the RESOLVE=0 fallback too. `--cleanup=verbatim`
+    // is reachable only through MSG_SUFFIX: without it the command is allowed,
+    // with it the subject is refused. A suffix computed one byte wrong drops the
+    // option and returns 0 — the ACCEPT direction, which is the dangerous one.
+    test('the suffix window still sees an option after a 112KB command', async () => {
+      const pad = ' '.repeat(112 * 1024);
+      const base = `git commit -m "$(cat${pad} <<'EOF'\nfeat: x\nEOF\n)"`;
+
+      const control = await runCmdAsync(base);
+      assertValidated(control, 'control');
+      assert.strictEqual(control.status, 0,
+        'control: with no trailing option the command is allowed — without this the ' +
+        'assertion below could pass on a hook that blocks everything');
+
+      const withOption = await runCmdAsync(`${base} --cleanup=verbatim`);
+      assertValidated(withOption, 'with trailing option');
+      assert.strictEqual(withOption.status, 2,
+        'a trailing --cleanup=verbatim is reachable only through the suffix window, so ' +
+        'blocking here proves the window survived the command length');
+    });
+  });

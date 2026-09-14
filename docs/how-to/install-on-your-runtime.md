@@ -64,7 +64,9 @@ The `FileChanged` hook is always-on and a no-op when `.planning/config.json` doe
 
 ### Claude Code — native plugin install
 
-GSD Core ships a `.claude-plugin/plugin.json` manifest, which enables installation and lifecycle management through the Claude Code plugin system. This path is **additive** — the npm installer above remains fully supported, and the two approaches differ in namespace and lifecycle only.
+GSD Core ships a `.claude-plugin/plugin.json` manifest, which enables installation and lifecycle management through the Claude Code plugin system. This path is **additive** — the npm installer above remains fully supported, and the two approaches differ in namespace and lifecycle.
+
+**Install-time config does not apply here.** The native plugin path (this section, the skills-dir load below, and marketplace discovery) materializes the repository tree directly — there is no install step. Install-time config that the npm installer bakes into generated artifact files at install time (confirmed for `agent_tools`; the same applies architecturally to `model_overrides` and other install-time-only keys) is never applied on this path, and running `claude plugin update` does not change that. If your setup relies on install-time config, use the npm installer above.
 
 **Install paths**
 
@@ -169,14 +171,13 @@ Skills land in `~/.codex/skills/gsd-*/SKILL.md`. Agents are written as standalon
 
 **Hook coverage**
 
-GSD registers the following Codex hook events automatically on install (requires Codex CLI 0.137.0+ for the stable hook-event schema):
+GSD registers the following Codex hook event automatically on install (requires Codex CLI 0.137.0+ for the stable hook-event schema):
 
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js` | Update check at session open; Windows installs also emit a `commandWindows` field pointing to the `.cmd` shim so Codex picks the correct executor on Windows without requiring per-OS config regeneration |
-| `SubagentStart` | `gsd-context-monitor.js` | Inject context / GSD_AGENT_NAME awareness at subagent open |
-| `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |
-| `PostToolUse` | `gsd-context-monitor.js` | Mirror the context-monitor coverage available in Claude Code |
+
+**Context warnings are not supported on Codex (#2586).** Earlier revisions of GSD also registered `SubagentStart`/`Stop`/`PostToolUse` (plus, briefly, six more events) against `gsd-context-monitor.js` for context-headroom tracking. That hook only produces a warning by reading a remaining-context-percentage bridge file that `gsd-statusline.js` — Claude Code's own statusline mechanism — writes; Codex never installs a statusline writer, so every one of those registrations fired as a guaranteed silent no-op, every invocation, with no exceptions. GSD no longer copies or registers `gsd-context-monitor.js` on a fresh Codex install; a reinstall over an older GSD install removes the stale registrations and the now-unreferenced script automatically. Agent-facing context warnings and GSD phase/lifecycle display remain unsupported capabilities on Codex (see `capabilities/codex/capability.json`) until a real metrics producer exists for this runtime — native Codex `/statusline` configuration is a separate, not-yet-implemented surface.
 
 All registered hooks are managed by GSD and are removed cleanly on `--uninstall`.
 
